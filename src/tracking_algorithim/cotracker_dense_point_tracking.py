@@ -1,8 +1,8 @@
 """
-CoTracker3 Dense Point Tracker & Action Extractor (Apple Silicon MPS)
-Tracks dense point clouds on human hand and target steel glass across video frames.
-Computes rigid wrist displacements via SVD/centroid tracking and detects
-grasp/release transitions via co-motion velocity correlation (rho_t).
+CoTracker3 Dense Point Tracker (NVIDIA Jetson AGX Thor / CUDA)
+- Tracks dense point trajectories on the human hand and target tumbler throughout the video.
+- Estimates wrist motion from tracked point displacements and identifies grasp and release events
+using hand-object co-motion correlation (rho_t).
 """
 
 import os
@@ -13,8 +13,20 @@ import torch
 from pathlib import Path
 from typing import Dict, Tuple, Optional, List
 
-# Check device: Apple Silicon GPU (MPS) or CPU fallback
-DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+import urllib.request
+
+
+def _select_device() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+DEVICE = _select_device()
 
 # Tracking grid configurations
 HAND_GRID_SHAPE = (6, 6)   # 36 tracking points on the hand
@@ -26,17 +38,8 @@ RELEASE_CORR_THRESHOLD = 0.25 # rho < 0.25 triggers gripper open
 
 
 class CoTrackerTrajectoryExtractor:
-    """
-    Extracts 6D rigid hand motion and object co-motion grasp states
-    using CoTracker3 dense point tracking on Apple Silicon MPS.
-    """
-
-    def __init__(
-        self,
-        target_size: Tuple[int, int] = (384, 384),
-        model_name: str = "cotracker3_offline",
-        device: str = DEVICE,
-    ):
+    """Extracts 6D rigid hand motion and object co-motion grasp states using CoTracker3 dense point tracking."""
+    def __init__(self, target_size: Tuple[int, int] = (512, 512),model_name: str = "cotracker3_offline", device: str = DEVICE): # old 384 target size
         self.target_size = target_size
         self.device = device
         self.model_name = model_name
@@ -44,65 +47,74 @@ class CoTrackerTrajectoryExtractor:
 
     @property
     def model(self):
-        """Lazy-loads CoTracker3 onto the target device."""
+        """loads CoTracker3 onto the target device."""
         if self._model is None:
             print(f"[*] Loading CoTracker3 ({self.model_name}) on {self.device}...")
-            self._model = torch.hub.load(
-                "facebookresearch/co-tracker",
-                self.model_name,
-                force_reload=False,
-            ).to(self.device)
+            # Load CoTracker3 from the Facebook Research CoTracker
+            # repository using PyTorch Hub.
+            self._model = torch.hub.load("facebookresearch/co-tracker",self.model_name,force_reload=False).to(self.device)
+
+            # Put CoTracker3 into inference/evaluation mode.
+            """
+            We are using the network to track points, not training it.
+            "eval()" disables training-specific behavior in applicable
+            neural-network layers.
+            """
             self._model.eval()
             print("[+] CoTracker3 loaded successfully.")
+
+        # Return the loaded model.
+        """ If the "model" property is called again, self._model is no longer None, 
+        so the expensive torch.hub.load() step above is skipped and the same model instance is returned. 
+        """
         return self._model
 
-    def _detect_hand_and_glass_rois(
-        self,
-        frames: List[np.ndarray],
-    ) -> Tuple[int, Tuple[int, int, int, int], Optional[np.ndarray]]:
+    def _detect_hand_and_tembler_rois(self,frames: List[np.ndarray]) -> Tuple[int, Tuple[int, int, int, int], Optional[np.ndarray]]:
         """
-        Detects:
-        1. Tight Glass ROI on table at frame 0 (x0, y0, x1, y1), strictly on the metal cup.
-        2. First frame index t_hand where the human hand enters the frame.
-        3. Hand initial points (21 landmark points) at entry frame t_hand.
+        Finds the initial points needed by CoTracker3:
+        1. Tumbler ROI: Defines the rectangular image region containing the tumbler. On table at frame 0 (x0, y0, x1, y1), strictly on the metal cup.
+         IMPORTANT: The current implementation does NOT detect the tumbler automatically. Its position is manually defined using percentages of the image width and height.
+        
+        2. Hand entry frame:
+        Searches the beginning of the video using MediaPipe and finds the first frame where a hand can be detected.
+        
+        3. Initial hand tracking points:
+        MediaPipe provides 21 anatomical hand landmarks on the first detected hand frame. 
+        These points are later given to CoTracker3 as query points.
+
+        Hand initial points (21 landmark points) at entry frame t_hand.
         """
         T = len(frames)
         H, W = self.target_size
 
         # Tight glass ROI positioned strictly on cylindrical metal body (avoiding table below):
         # In 384x384: X in [160, 215], Y in [145, 222]
-        glass_roi = (int(W * 0.42), int(H * 0.38), int(W * 0.56), int(H * 0.58))
+        # glass_roi = (int(W * 0.42), int(H * 0.38), int(W * 0.56), int(H * 0.58))
 
+        # at 512 glass_roi = (173, 231, 287, 383)
+        glass_roi = (int(W * 0.3379), int(H * 0.4512), int(W * 0.5605), int(H * 0.7480))
         t_entry = None
         hand_pts_init = None
 
         try:
-            import mediapipe as mp
-            from mediapipe.tasks import python
-            from mediapipe.tasks.python import vision
-            import urllib.request
-
             model_path = Path("models/hand_landmarker.task")
             if not model_path.exists():
                 try:
                     model_path.parent.mkdir(parents=True, exist_ok=True)
                     print(f"[*] Downloading MediaPipe Hand Landmarker model to {model_path}...")
-                    urllib.request.urlretrieve(
-                        "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-                        str(model_path),
-                    )
+                    urllib.request.urlretrieve("https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",str(model_path))
                     print("[+] MediaPipe Hand Landmarker model downloaded successfully.")
                 except Exception as dl_err:
                     print(f"[!] Could not auto-download MediaPipe model: {dl_err}")
 
             if model_path.exists():
                 base_options = python.BaseOptions(model_asset_path=str(model_path))
-                options = vision.HandLandmarkerOptions(
-                    base_options=base_options,
-                    running_mode=vision.RunningMode.IMAGE,
-                    num_hands=1,
-                    min_hand_detection_confidence=0.3,
-                )
+                """
+                vision.RunningMode.VIDEO -> This allows MediaPipe to use tracking between frames.
+                hand detection confidence : 0.4   Lower: more detections and potentially more false positives
+                tracking_confidence=0.4 , Lower: tracking may survive difficult frames better, but can become less reliable
+                """
+                options = vision.HandLandmarkerOptions(base_options=base_options, running_mode=vision.RunningMode.IMAGE, num_hands=1, min_hand_detection_confidence=0.3)
                 landmarker = vision.HandLandmarker.create_from_options(options)
 
                 # Scan frames to find first reliable hand detection
@@ -138,13 +150,7 @@ class CoTrackerTrajectoryExtractor:
         return t_entry, glass_roi, hand_pts_init
 
 
-
-    def _build_queries(
-        self,
-        t_hand: int,
-        glass_roi: Tuple[int, int, int, int],
-        hand_pts_init: np.ndarray,
-    ) -> torch.Tensor:
+    def _build_queries(self, t_hand: int, glass_roi: Tuple[int, int, int, int],hand_pts_init: np.ndarray) -> torch.Tensor:
         """Constructs query tensor of shape (1, N_glass + N_hand, 3) with [t, x, y]."""
         # Glass points seeded at t=0
         gx0, gy0, gx1, gy1 = glass_roi
@@ -161,10 +167,9 @@ class CoTrackerTrajectoryExtractor:
         all_queries = torch.cat([g_queries, h_queries], dim=0).unsqueeze(0)  # (1, N, 3)
         return all_queries
 
-    def process_video(
-        self,
+    def process_video(self,
         video_path: str,
-        output_dir: str = "data/cotracker_trajectories",
+        output_dir: str = "datasets/cotracker_trajectories",
         save_annotated_video: bool = True,
     ) -> Dict[str, np.ndarray]:
         """
@@ -209,7 +214,7 @@ class CoTrackerTrajectoryExtractor:
         T = len(frames_rgb)
 
         # 1. Detect ROIs & Keypoints
-        t_hand, glass_roi, hand_pts_init = self._detect_hand_and_glass_rois(frames_rgb)
+        t_hand, glass_roi, hand_pts_init = self._detect_hand_and_tembler_rois(frames_rgb)
         N_glass = GLASS_GRID_SHAPE[0] * GLASS_GRID_SHAPE[1]
         N_hand = len(hand_pts_init)
 
@@ -353,9 +358,9 @@ class CoTrackerTrajectoryExtractor:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Extract dense point trajectories via CoTracker3 on MPS")
+    parser = argparse.ArgumentParser(description="Extract dense point trajectories via CoTracker3")
     parser.add_argument("--video", type=str, default="media/Vid_0.mp4", help="Path to video file")
-    parser.add_argument("--out_dir", type=str, default="data/cotracker_trajectories", help="Output directory")
+    parser.add_argument("--out_dir", type=str, default="datasets/cotracker_trajectories", help="Output directory")
     args = parser.parse_args()
 
     extractor = CoTrackerTrajectoryExtractor()
