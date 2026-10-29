@@ -32,9 +32,40 @@ DEVICE = _select_device()
 HAND_GRID_SHAPE = (6, 6)   # 36 tracking points on the hand
 GLASS_GRID_SHAPE = (4, 4)  # 16 tracking points on the steel glass
 
-# Co-motion grasp correlation parameters
-GRASP_CORR_THRESHOLD = 0.55   # rho > 0.55 triggers gripper close
-RELEASE_CORR_THRESHOLD = 0.25 # rho < 0.25 triggers gripper open
+
+# Minimum hand/tumbler movement in pixels per frame required
+# before cosine similarity is considered reliable.
+MIN_VELOCITY_THRESH = 0.4     # minimum velocity magnitude to compute correlation (suppress noise)
+
+# Do not allow grasp detection immediately when the hand first appears.
+# With a 30 FPS video, 15 frames correspond to 0.5 seconds.
+GRASP_FRAME_DELAY = 15
+
+# ============================================================
+# GRASP PARAMETERS
+# ============================================================
+
+# Close when hand and tumbler move in approximately the same direction.
+GRASP_CORR_THRESHOLD = 0.85
+
+# Close only when normalized hand-tumbler centroid distance is below 0.22.
+GRASP_PROXIMITY_THRESH = 0.22
+
+
+# ============================================================
+# RELEASE PARAMETERS
+# ============================================================
+
+# Release when hand and tumbler no longer move together.
+RELEASE_CORR_THRESHOLD = 0.20
+
+# At the true release moment, the hand can still be close to the tumbler.
+# Your observed release distance was approximately 0.19.
+RELEASE_PROXIMITY_THRESH = 0.25
+
+# Safety release when hand and tumbler are clearly far apart.
+RELEASE_DIST_THRESH = 0.40
+
 
 
 class CoTrackerTrajectoryExtractor:
@@ -87,12 +118,23 @@ class CoTrackerTrajectoryExtractor:
         T = len(frames)
         H, W = self.target_size
 
-        # Tight glass ROI positioned strictly on cylindrical metal body (avoiding table below):
-        # In 384x384: X in [160, 215], Y in [145, 222]
-        # glass_roi = (int(W * 0.42), int(H * 0.38), int(W * 0.56), int(H * 0.58))
+        # Tight glass ROI positioned strictly on cylindrical metal body.
+        # With letterboxing, portrait video is centered with dark bars on left/right.
+        # These percentages must cover ONLY the metal cup body — not the table.
+        # Tune these 4 values by checking the first frame of your annotated video.
+        """
+        Left = decrease x
+        Right = increase x
+        Up = decrease y
+        Down = increase y
+        """
+        glass_roi = (
+            int(W * 0.38),  # x0 = LEFT edge. 0.40 -> 0.38 # left 
+            int(H * 0.42),  # y0 = TOP edge # # 0.38 -> 0.40 (down)
+            int(W * 0.52),  # x1 = RIGHT edge # # 0.56 -> 0.54 # left 
+            int(H * 0.60),  # y1 = BOTTOM edge # # 0.58 -> 0.60 (down)
+            )
 
-        # at 512 glass_roi = (173, 231, 287, 383)
-        glass_roi = (int(W * 0.3379), int(H * 0.4512), int(W * 0.5605), int(H * 0.7480))
         t_entry = None
         hand_pts_init = None
 
@@ -118,20 +160,26 @@ class CoTrackerTrajectoryExtractor:
                 landmarker = vision.HandLandmarker.create_from_options(options)
 
                 # Scan frames to find first reliable hand detection
-                for t in range(0, min(T, 100), 2):
+                # T = total number of video frames.
+                for t in range(0, min(T, 100), 2): #check every second frame, MediaPipe actually processes about 50 images during this search.
                     mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=frames[t])
-                    res = landmarker.detect(mp_img)
+                    res = landmarker.detect(mp_img)#  Run hand detection
                     if res.hand_landmarks:
                         lms = res.hand_landmarks[0]
                         # Extract all 21 keypoints directly on hand anatomy
-                        pts = []
+                        pts = []  # Prepare a list for the 21 points
                         for lm in lms:
+                            """
+                            MediaPipe does NOT return x and y directly in 512x512 pixel coordinates.
+                            It gives normalized coordinates. For example: lm.x = 0.50, lm.y = 0.70
+                             means: x = 50% across the image, y = 70% down the image. 
+                            """
                             # Clamp within valid video area (avoid black letterbox padding)
-                            px = np.clip(lm.x * W, W * 0.22 + 5, W * 0.78 - 5)
+                            px = np.clip(lm.x * W, W * 0.22 + 5, W * 0.78 - 5)# Convert Normalized X to Pixel X
                             py = np.clip(lm.y * H, 5, H - 5)
                             pts.append([px, py])
                         pts = np.array(pts, dtype=np.float32)
-                        t_entry = t
+                        t_entry = t # Remember when the hand appeared
                         hand_pts_init = pts
                         break
         except Exception as e:
@@ -167,11 +215,7 @@ class CoTrackerTrajectoryExtractor:
         all_queries = torch.cat([g_queries, h_queries], dim=0).unsqueeze(0)  # (1, N, 3)
         return all_queries
 
-    def process_video(self,
-        video_path: str,
-        output_dir: str = "datasets/cotracker_trajectories",
-        save_annotated_video: bool = True,
-    ) -> Dict[str, np.ndarray]:
+    def process_video(self, video_path: str, output_dir: str = "datasets/cotracker_trajectories", save_annotated_video: bool = True) -> Dict[str, np.ndarray]:
         """
         Runs dense tracking on video, extracts hand trajectories,
         computes co-motion correlation, and saves trajectory dataset.
@@ -188,22 +232,22 @@ class CoTrackerTrajectoryExtractor:
 
         print(f"[*] Processing {vpath.name}: {total_frames} frames @ {fps:.1f} FPS ({orig_w}x{orig_h})")
 
-        # Letterbox into square frame
+        # Letterbox into square frame (preserve aspect ratio)
         max_dim = max(orig_w, orig_h)
         pad_top = (max_dim - orig_h) // 2
         pad_bottom = max_dim - orig_h - pad_top
         pad_left = (max_dim - orig_w) // 2
         pad_right = max_dim - orig_w - pad_left
 
-        frames_rgb = []
-        timestamps = []
+        frames_rgb: List[np.ndarray] = []
+        timestamps: List[float] = []
         for f_idx in range(total_frames):
             ret, frame = cap.read()
             if not ret:
                 break
             padded = cv2.copyMakeBorder(
                 frame, pad_top, pad_bottom, pad_left, pad_right,
-                cv2.BORDER_CONSTANT, value=[30, 30, 30]
+                cv2.BORDER_CONSTANT, value=[30, 30, 30],
             )
             resized = cv2.resize(padded, self.target_size)
             rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
@@ -212,6 +256,8 @@ class CoTrackerTrajectoryExtractor:
         cap.release()
 
         T = len(frames_rgb)
+        if T == 0:
+            raise ValueError(f"No frames read from {vpath}")
 
         # 1. Detect ROIs & Keypoints
         t_hand, glass_roi, hand_pts_init = self._detect_hand_and_tembler_rois(frames_rgb)
@@ -232,26 +278,21 @@ class CoTrackerTrajectoryExtractor:
         with torch.no_grad():
             tracks, vis = self.model(video_tensor, queries=queries)
 
+        tracks = tracks.squeeze(0).cpu().numpy()   # (T, N_total, 2)
+        vis = vis.squeeze(0).cpu().numpy()          # (T, N_total)
 
-        tracks = tracks.squeeze(0).cpu().numpy()  # (T, N_total, 2)
-        vis = vis.squeeze(0).cpu().numpy()        # (T, N_total)
-
-        glass_tracks = tracks[:, :N_glass, :]     # (T, N_glass, 2)
-        hand_tracks = tracks[:, N_glass:, :]      # (T, N_hand, 2)
+        glass_tracks = tracks[:, :N_glass, :]       # (T, N_glass, 2)
+        hand_tracks = tracks[:, N_glass:, :]        # (T, N_hand, 2)
 
         # 3. Compute Centroids & Normalized Trajectories
-        W, H = self.target_size
+        H, W = self.target_size
         glass_centroids = glass_tracks.mean(axis=1) / np.array([W, H], dtype=np.float32)  # (T, 2)
         hand_centroids = hand_tracks.mean(axis=1) / np.array([W, H], dtype=np.float32)    # (T, 2)
 
-        # For frames before hand entry, keep hand stationary at entry point
         for t in range(t_hand):
             hand_centroids[t] = hand_centroids[t_hand]
 
-        # Wrist 3D Position Proxy:
-        # X: lateral hand centroid [0, 1]
-        # Y: vertical hand centroid [0, 1] (0 top, 1 bottom)
-        # Z: depth proxy based on distance to glass
+        # Wrist 3D proxy: [centroid_x, centroid_y, dist_to_glass]
         wrist_pos_3d = np.zeros((T, 3), dtype=np.float32)
         for t in range(T):
             dist_to_glass = float(np.linalg.norm(hand_centroids[t] - glass_centroids[t]))
@@ -259,83 +300,166 @@ class CoTrackerTrajectoryExtractor:
             wrist_pos_3d[t, 1] = hand_centroids[t, 1]
             wrist_pos_3d[t, 2] = dist_to_glass
 
-        # Compute wrist deltas: delta[t] = pos[t] - pos[t-1]
         wrist_deltas = np.zeros_like(wrist_pos_3d)
         if T > 1:
             wrist_deltas[1:] = wrist_pos_3d[1:] - wrist_pos_3d[:-1]
         wrist_deltas[:t_hand] = 0.0
 
-        # 4. Co-motion Grasp Correlation (rho_t)
+        # 4. Co-motion Grasp Correlation (cosine similarity of velocity vectors)
         v_glass = glass_tracks[1:] - glass_tracks[:-1]  # (T-1, N_glass, 2)
-        v_hand = hand_tracks[1:] - hand_tracks[:-1]    # (T-1, N_hand, 2)
-        mean_vg = v_glass.mean(axis=1)                 # (T-1, 2)
-        mean_vh = v_hand.mean(axis=1)                  # (T-1, 2)
+        v_hand = hand_tracks[1:] - hand_tracks[:-1]     # (T-1, N_hand, 2)
+        mean_vg = v_glass.mean(axis=1)                   # (T-1, 2)
+        mean_vh = v_hand.mean(axis=1)                    # (T-1, 2)
+
+        # ============================================================
+        # CO-MOTION GRASP AND RELEASE DETECTION
+        # ============================================================
 
         corrs = np.zeros(T, dtype=np.float32)
-        gripper_states = np.full(T, -1.0, dtype=np.float32)  # -1.0 = OPEN, +1.0 = CLOSED
+        # -1.0 = OPEN, +1.0 = CLOSED
+        gripper_states = np.full(T,-1.0,dtype=np.float32)
         current_gripper = -1.0
 
         for t in range(1, T):
+            # Mean tumbler and hand displacement between frames t-1 and t.
             vg = mean_vg[t - 1]
             vh = mean_vh[t - 1]
+            # Velocity/displacement magnitudes in pixels per frame.
             norm_g = float(np.linalg.norm(vg))
             norm_h = float(np.linalg.norm(vh))
+            # --------------------------------------------------------
+            # Calculate hand-tumbler directional similarity
+            # --------------------------------------------------------
 
-            if norm_g > 0.4 and norm_h > 0.4:
+            # Only calculate cosine similarity when BOTH the hand and
+            # tumbler have enough motion to give a meaningful direction.
+            if (norm_g > MIN_VELOCITY_THRESH and norm_h > MIN_VELOCITY_THRESH):
                 cos_sim = float(np.dot(vg, vh) / (norm_g * norm_h))
+                # Protect against small floating-point errors.
+                cos_sim = float(np.clip(cos_sim, -1.0, 1.0))
             else:
+                # If either object is nearly stationary, its direction
+                # is not reliable. Treat co-motion correlation as zero.
                 cos_sim = 0.0
-            corrs[t] = cos_sim
 
-            # Hysteresis latch with spatial proximity constraint
+            # Save correlation for visualization and dataset generation.
+            corrs[t] = cos_sim
+            # --------------------------------------------------------
+            # Calculate normalized hand-tumbler distance
+            # --------------------------------------------------------
             dist_to_glass = float(np.linalg.norm(hand_centroids[t] - glass_centroids[t]))
-            is_near_glass = dist_to_glass < 0.25
+
+            # Named Boolean conditions make the transition logic clearer.
+            is_near_glass = (dist_to_glass < GRASP_PROXIMITY_THRESH)
+            is_in_release_proximity = (dist_to_glass < RELEASE_PROXIMITY_THRESH)
+            is_far_from_glass = (dist_to_glass > RELEASE_DIST_THRESH)
+            has_strong_co_motion = (cos_sim > GRASP_CORR_THRESHOLD)
+            has_lost_co_motion = (cos_sim < RELEASE_CORR_THRESHOLD)
+            grasp_delay_passed = (t >= t_hand + GRASP_FRAME_DELAY)
+
+
+            # ========================================================
+            # CURRENT STATE: OPEN
+            # ========================================================
 
             if current_gripper < 0:
-                if cos_sim > GRASP_CORR_THRESHOLD and is_near_glass and t >= (t_hand + 10):
+                # Trigger grasp when:
+                # 1. Hand and tumbler move strongly in the same direction.
+                # 2. Hand is sufficiently close to the tumbler.
+                # 3. The initial delay after hand entry has passed.
+                if (has_strong_co_motion and is_near_glass and grasp_delay_passed):
                     current_gripper = 1.0
+                    print(
+                        f"    [GRASP]   "
+                        f"frame {t} "
+                        f"(t={t / fps:.2f}s) "
+                        f"rho={cos_sim:.3f} "
+                        f"dist={dist_to_glass:.3f} "
+                        f"glass_speed={norm_g:.3f} "
+                        f"hand_speed={norm_h:.3f}"
+                    )
+
+
+            # ========================================================
+            # CURRENT STATE: CLOSED
+            # ========================================================
+
             else:
-                if (cos_sim < RELEASE_CORR_THRESHOLD and norm_g > 2.0) or dist_to_glass > 0.40:
+
+                # Primary release condition:
+                #
+                # The hand and tumbler have stopped moving together,
+                # but the hand is still close to the tumbler.
+                #
+                # IMPORTANT: only fire this when at least one object is
+                # actually moving. When both are nearly stationary,
+                # cos_sim is forced to 0.0 by MIN_VELOCITY_THRESH —
+                # that's "undefined co-motion", not "lost co-motion".
+                # Without this guard, any pause mid-lift triggers a
+                # false release.
+                either_moving = (norm_g > MIN_VELOCITY_THRESH or norm_h > MIN_VELOCITY_THRESH)
+                release_by_lost_co_motion = (has_lost_co_motion and is_in_release_proximity and either_moving)
+
+                # Safety release:
+                #
+                # If the hand has moved very far from the tumbler,
+                # it cannot reasonably still be holding it.
+                release_by_separation = is_far_from_glass
+
+                if (release_by_lost_co_motion or release_by_separation):
                     current_gripper = -1.0
+                    if release_by_lost_co_motion:
+                        release_reason = "lost_co_motion"
+                    else:
+                        release_reason = "large_separation"
+
+                    print(
+                        f"    [RELEASE] "
+                        f"frame {t} "
+                        f"(t={t / fps:.2f}s) "
+                        f"rho={cos_sim:.3f} "
+                        f"dist={dist_to_glass:.3f} "
+                        f"glass_speed={norm_g:.3f} "
+                        f"hand_speed={norm_h:.3f} "
+                        f"reason={release_reason}"
+                    )
+
+
+            # Save the resulting state for this frame.
             gripper_states[t] = current_gripper
 
-        # 5. Save Annotated Video if requested
+        # 5. Save Annotated Video
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
         if save_annotated_video:
-            annotated_video_path = out_dir / f"{vpath.stem}_ct_annotated.mp4"
+            ann_path = out_dir / f"{vpath.stem}_ct_annotated.mp4"
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            writer = cv2.VideoWriter(str(annotated_video_path), fourcc, fps, (W, H))
+            writer = cv2.VideoWriter(str(ann_path), fourcc, fps, (W, H))
 
             for t in range(T):
                 vis_bgr = cv2.cvtColor(frames_rgb[t], cv2.COLOR_RGB2BGR)
 
-                # Draw glass points (Blue)
                 for pt in glass_tracks[t]:
-                    px, py = int(pt[0]), int(pt[1])
-                    cv2.circle(vis_bgr, (px, py), 3, (255, 120, 0), -1)
+                    cv2.circle(vis_bgr, (int(pt[0]), int(pt[1])), 3, (255, 120, 0), -1)
 
-                # Draw hand points (Green if reaching, Red if grasping)
                 hand_color = (0, 0, 255) if gripper_states[t] > 0 else (0, 255, 0)
                 if t >= t_hand:
                     for pt in hand_tracks[t]:
-                        px, py = int(pt[0]), int(pt[1])
-                        cv2.circle(vis_bgr, (px, py), 3, hand_color, -1)
+                        cv2.circle(vis_bgr, (int(pt[0]), int(pt[1])), 3, hand_color, -1)
 
-                    # Connect centroids with correlation indicator
                     gc = (int(glass_centroids[t, 0] * W), int(glass_centroids[t, 1] * H))
                     hc = (int(hand_centroids[t, 0] * W), int(hand_centroids[t, 1] * H))
                     cv2.line(vis_bgr, gc, hc, hand_color, 2)
 
-                # Status HUD
                 state_text = "GRASPED (LIFTING)" if gripper_states[t] > 0 else "APPROACHING"
+                dist_t = float(np.linalg.norm(hand_centroids[t] - glass_centroids[t]))
                 cv2.putText(vis_bgr, f"CoTracker3: {state_text}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, hand_color, 2)
-                cv2.putText(vis_bgr, f"Co-motion rho: {corrs[t]:.2f}", (10, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                cv2.putText(vis_bgr, f"Co-motion rho: {corrs[t]:.2f}  dist: {dist_t:.2f}", (10, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
                 writer.write(vis_bgr)
             writer.release()
-            print(f"[+] Saved annotated video -> {annotated_video_path}")
+            print(f"[+] Saved annotated video -> {ann_path}")
 
         # 6. Save Trajectory Dataset
         output_file = out_dir / f"{vpath.stem}_ct_trajectory.npz"
@@ -346,22 +470,98 @@ class CoTrackerTrajectoryExtractor:
             "wrist_deltas": wrist_deltas,
             "gripper_states": gripper_states,
             "correlations": corrs,
-            "glass_tracks": glass_tracks,
-            "hand_tracks": hand_tracks,
+            "glass_tracks": glass_tracks.astype(np.float32),
+            "hand_tracks": hand_tracks.astype(np.float32),
             "t_hand": np.int32(t_hand),
             "fps": np.float32(fps),
             "source_video": str(vpath),
         }
-        np.savez_compressed(output_file, **traj_data)
+        np.savez_compressed(str(output_file), **traj_data)
         print(f"[+] Saved CoTracker3 trajectory -> {output_file}")
         return traj_data
 
 
+def process_all_raw_videos(raw_dir: str, output_dir: str):
+    """
+    Process every supported raw video in a directory using CoTracker3.
+
+    Annotated and synthetic videos are excluded to prevent processing
+    generated outputs as new inputs.
+    """
+    raw_path = Path(raw_dir)
+
+    if not raw_path.exists():
+        raise FileNotFoundError(f"Raw video directory was not found: {raw_path}")
+
+    candidates = []
+    for pattern in ("*.mp4", "*.MP4", "*.mov", "*.MOV"):
+        candidates.extend(raw_path.glob(pattern))
+
+    unique_videos = []
+    seen_paths: set = set()
+
+    for video_path in sorted(candidates):
+        resolved_path = str(video_path.resolve())
+
+        if resolved_path in seen_paths:
+            continue
+
+        if video_path.stem.endswith(("_annotated", "_ct_annotated")):
+            continue
+
+        if video_path.name.startswith("synthetic"):
+            continue
+
+        seen_paths.add(resolved_path)
+        unique_videos.append(video_path)
+
+    if not unique_videos:
+        print(f"[-] No raw MP4 or MOV videos found in {raw_dir}")
+        return
+
+    print(f"[*] Found {len(unique_videos)} videos to process in {raw_dir}")
+
+    extractor = CoTrackerTrajectoryExtractor(target_size=(512, 512))
+
+    for index, video_path in enumerate(unique_videos, start=1):
+        print(f"\n[*] Video {index}/{len(unique_videos)}: {video_path.name}")
+
+        try:
+            extractor.process_video(
+                video_path=str(video_path),
+                output_dir=output_dir,
+                save_annotated_video=True,
+            )
+        except Exception as error:
+            print(f"[!] Failed to process {video_path.name}: {error}")
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Extract dense point trajectories via CoTracker3")
-    parser.add_argument("--video", type=str, default="media/Vid_0.mp4", help="Path to video file")
-    parser.add_argument("--out_dir", type=str, default="datasets/cotracker_trajectories", help="Output directory")
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Extract dense hand and tumbler trajectories "
+            "from video using CoTracker3"))
+
+    parser.add_argument("--video", type=str, default=None, help="Path to one video file")
+    parser.add_argument("--raw_dir", type=str, default="media", help="Directory containing raw videos")
+    parser.add_argument("--output_dir", type=str, default="datasets/cotracker_trajectories", help="Directory for trajectory datasets and annotated videos")
+    parser.add_argument("--no_annotated_video", action="store_true", help="Do not save the annotated visualization video")
     args = parser.parse_args()
 
-    extractor = CoTrackerTrajectoryExtractor()
-    extractor.process_video(args.video, args.out_dir)
+    if args.video:
+        extractor = CoTrackerTrajectoryExtractor(target_size=(512, 512))
+        extractor.process_video(
+            video_path=args.video,
+            output_dir=args.output_dir,
+            save_annotated_video=(not args.no_annotated_video),
+        )
+    else:
+        process_all_raw_videos(raw_dir=args.raw_dir, output_dir=args.output_dir)
+
+
+""" 
+python3 src/tracking_algorithm/cotracker_dense_point_tracking.py \
+    --video datasets/egocentric_video/cup_lifting_01.mp4 \
+    --output_dir datasets/cotracker_trajectories
+"""

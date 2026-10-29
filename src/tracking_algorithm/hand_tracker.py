@@ -450,12 +450,13 @@ class HandTrajectoryExtractor:
                     cv2.circle(visual_bgr, indicator_center, 8, OPEN_COLOR, 2)
 
 
+                cv2.rectangle(visual_bgr, (5, 5), (200, 48), (255, 255, 255), -1)
                 cv2.putText(visual_bgr, status_text, (10, 20),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.42, status_color, 2)
 
                 pinch_text = f"Pinch: {pinch_dist:.3f} [{used_landmark_name}]"
                 cv2.putText(visual_bgr, pinch_text, (10, 38),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, TEXT_COLOR, 1)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 0), 1)
 
                 annotated_writer.write(visual_bgr)
 
@@ -533,4 +534,7 @@ if __name__ == "__main__":
 
 # .venv 
 # cd Pollex
-# python3 src/tracking_video_processing/hand_tracker.py --video datasets/egocentric_video/cup_lifting_01.mp4
+"""
+python3 src/tracking_algorithm/hand_tracker.py \
+    --video datasets/egocentric_video/cup_lifting_01.mp4
+"""

@@ -1,5 +1,6 @@
-# CortexSort
-### Language-Guided Robotic Manipulation with Vision-Language Models
+# Pollex
+### Robotic Manipulation with Vision-Language Action SmolVla Models 
+
 [![Python 3.10](https://img.shields.io/badge/Python-3.10-blue.svg)](https://www.python.org/)
 [![PyTorch MPS](https://img.shields.io/badge/PyTorch-2.4%20(Apple%20Silicon%20MPS)-red.svg)](https://pytorch.org/)
 [![RoboSuite](https://img.shields.io/badge/RoboSuite-1.5.1-green.svg)](https://robosuite.ai/)
@@ -76,11 +77,11 @@ source .venv/bin/activate
 ### 1.1  MediaPipe 21 Hand point segment and pinch metric tracking:
 
 
-The tracking pipeline (`src/tracking_algorithim/hand_tracker.py`) uses the Google MediaPipe Tasks API to extract 21 3D hand landmarks per frame from an egocentric video.
+The tracking pipeline (`src/tracking_algorithm/hand_tracker.py`) uses the Google MediaPipe Tasks API to extract 21 3D hand landmarks per frame from an egocentric video.
 
 ```bash
 cd Pollex
-python3 src/tracking_algorithim/hand_tracker.py \
+python3 src/tracking_algorithm/hand_tracker.py \
     --video datasets/egocentric_video/cup_lifting_01.mp4
 ```
 
@@ -117,13 +118,14 @@ where $d_{L_i} = \| \mathbf{p}_{L_4} - \mathbf{p}_{L_i} \|_2$ is the distance fr
 **Limitation**: The hand deforms non-rigidly during grasp closure, and different camera angles occlude different joints unpredictably. No static keypoint heuristic can guarantee reliable tracking during physical contact with the object, which motivated the transition to dense point tracking (Section 1.4).
 
 ### 1.4 CoTracker3 (Dense point tracking approach)
-As an alternative to relying only on individual hand landmarks, a dense point-tracking pipeline was implemented using CoTracker3. The purpose of this approach is to track both the hand and the manipulated object over time and use their relative motion to identify grasp and release events. (`src/tracking_algorithim/cotracker_dense_point_tracking.py`). 
+As an alternative to relying only on individual hand landmarks, a dense point-tracking pipeline was implemented using CoTracker3. The purpose of this approach is to track both the hand and the manipulated object over time and use their relative motion to identify grasp and release events. (`src/tracking_algorithm/cotracker_dense_point_tracking.py`). 
 
 
 ```bash
 cd Pollex
-python3 src/tracking_algorithim/cotracker_dense_point_tracking.py \
-    --video datasets/egocentric_video/cup_lifting_01.mp4
+python3 src/tracking_algorithm/cotracker_dense_point_tracking.py \
+    --video datasets/egocentric_video/cup_lifting_01.mp4 \
+    --output_dir datasets/cotracker_trajectories
 ```
 The initial tracking points are divided into two groups:
 
@@ -192,3 +194,33 @@ Overall, the CoTracker3 pipeline provides a complementary signal to the MediaPip
 </p>
 
 ---
+
+
+Cotracker parameters:
+
+Parameters at the top of the file (lines 36-42):
+Parameter	Old	New	What it controls
+GRASP_CORR_THRESHOLD	0.55	0.65	How strongly hand and glass must move together before grasp triggers. Raise to prevent early false grasp.
+GRASP_PROXIMITY_THRESH	0.25 (hardcoded)	0.15	How close (normalized distance) the hand centroid must be to the glass centroid. Lower = hand must be closer.
+GRASP_FRAME_DELAY	10 (hardcoded)	20	Frames after hand entry before grasp is allowed. Raise if grasp fires during the approach phase.
+MIN_VELOCITY_THRESH	0.4 (hardcoded)	0.8	Minimum pixel velocity to compute correlation. Below this, rho is forced to 0. Raise to suppress noise when hand/glass are nearly still.
+RELEASE_DIST_THRESH	0.40 (hardcoded)	0.35	Distance that forces release even if rho is high.
+Glass ROI (line 94):
+This is the most important thing to get right. The blue dots in your screenshot are spread across the table — they should only be on the cup body. The ROI reverted to (0.42, 0.38, 0.56, 0.58) which matches the reference repo's 384x384 proportions. Since your frame is letterboxed now, you may need to adjust these 4 percentages by looking at frame 0 of your annotated video.
+
+Debugging workflow
+The HUD now shows dist: X.XX alongside rho. Run the video and watch:
+
+If dist never drops below GRASP_PROXIMITY_THRESH (0.15), the glass ROI center is wrong — adjust the ROI percentages
+If dist drops low but grasp still fires too early, raise GRASP_FRAME_DELAY
+If grasp fires when hand and glass aren't truly co-moving, raise GRASP_CORR_THRESHOLD or MIN_VELOCITY_THRESH
+
+
+
+GRASP:
+MIN_VELOCITY_THRESH = 0.8 — too high. This forces cos_sim = 0.0 whenever hand or glass velocity is below 0.8 px/frame. At 512x512, that's quite a lot of motion. The reference repo uses 0.4. This alone could be killing all your rho values.
+
+GRASP_PROXIMITY_THRESH = 0.15 — too tight. The distance is normalized (0-1 range), and 0.15 means the hand centroid must nearly overlap the glass centroid. The reference uses 0.25.
+
+GRASP_CORR_THRESHOLD = 0.65 — raised from the reference's 0.55, making it harder to trigger.
+
