@@ -63,3 +63,51 @@ The real issue
 Looking at the contact frames (201-209), the EEF is at X ≈ -0.069 and the glass is at X ≈ -0.029. That's still a 4.0 cm gap. The offset correction spread the 4.3 cm over the approach but the EMA smoothing and the reach dynamics absorbed most of it. The pads are hitting the glass from the side (single-finger contact), not wrapping around it.
 
 The next parameter should be a larger, more direct offset — or the approach needs to target the glass position explicitly rather than just adding a constant spread. Want me to try increasing the offset, or should we look at the reference repo's approach more closely to see how they achieve bilateral contact?
+
+
+###
+
+source /home/nvidia/Documents/Pollex/.venv/bin/activate && \
+export PYTHONPATH="$HOME/Documents/vla/LIBERO:$PYTHONPATH" && \
+export DISPLAY=:10 && \
+export XAUTHORITY="$HOME/.Xauthority" && \
+unset MUJOCO_GL && \
+unset QT_DEBUG_PLUGINS && \
+unset QT_PLUGIN_PATH && \
+unset QT_QPA_PLATFORM_PLUGIN_PATH && \
+cd /home/nvidia/Documents/Pollex && \
+python3 -m src.simulation.replay_trajectory \
+    --actions datasets/cotracker_iterations/iteration_06_wrist_squared/cup_lifting_01_ct_actions.npz \
+    --out_video datasets/cotracker_iterations/iteration_06_wrist_squared/cup_lifting_01_iteration_6.mp4 \
+    --out_dataset datasets/cotracker_iterations/iteration_06_wrist_squared/cup_lifting_01_replay.npz \
+    --human_video datasets/cotracker_trajectories/cup_lifting_01_ct_annotated.mp4 \
+    --task GlassLift \
+    --gui 2>&1
+
+
+    ## iteration 17
+                  Tumbler XYZ
+                  │
+        ┌─────────┴─────────┐
+        │                   │
+ pad-center X          pad-center Z
+        │                   │
+        ▼                   ▼
+ target - relative X   target - relative Z
+        │                   │
+        └────────┬──────────┘
+                 ▼
+           geometry ready
+          X ±3 mm, Z ±2 mm
+                 │
+           3 consecutive
+              frames
+                 │
+                 ▼
+            close gripper
+                 │
+                 ▼
+          physical grasp
+                 │
+                 ▼
+                lift

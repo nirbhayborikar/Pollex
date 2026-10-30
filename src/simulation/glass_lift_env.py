@@ -51,7 +51,7 @@ class GlassLiftEnv(Lift):
         # Square the Franka Panda wrist so fingers open along Y (perpendicular to table approach)
         # Default RoboSuite Panda has q7 = pi/4 (45° diagonal), causing the gripper to approach sideways
         if len(self.robots) > 0 and self.robots[0].name == "Panda":
-            square_qpos = np.array([0, np.pi / 16.0, 0.00, -np.pi / 2.0 - np.pi / 3.0, 0.00, np.pi - 0.2, np.pi / 4])
+            square_qpos = np.array([0, np.pi / 16.0, 0.00, -np.pi / 2.0 - np.pi / 3.0, 0.00, np.pi - 0.2, 0.0]) # last parameter is q7
             self.robots[0].init_qpos = square_qpos
 
         # Build a new CylinderObject for the glass with compliant contact.
@@ -72,8 +72,8 @@ class GlassLiftEnv(Lift):
         self.cube = glass
 
         # Rebuild the placement initializer around the new object.
-        # Position the cylinder right in front of the robot gripper (-0.035m)
-        glass_ref_pos = [self.table_offset[0] - 0.035, self.table_offset[1], self.table_offset[2]]
+        # Position the cylinder right in front of the robot gripper (-0.035m)# - 0.035
+        glass_ref_pos = [self.table_offset[0] - 0.055, self.table_offset[1], self.table_offset[2]]
         self.placement_initializer = UniformRandomSampler(
             name="GlassObjectSampler",
             mujoco_objects=self.cube,

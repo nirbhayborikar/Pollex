@@ -1,0 +1,24 @@
+REPLAY METRICS
+====================================================================
+
+ITERATION 17: OBJECT-RELATIVE X/Z GRASP
+--------------------------------------------------------------------
+Demonstrated timeout:      143
+Grasp trigger frame:       143
+Grasp trigger reason:      timeout
+Physical grasp frame:      146
+Target pad X offset:       -1.70 cm
+Initial/final pad X:       -2.46 / -1.61 cm
+Minimum |X error|:         0.00 cm
+Target pad Z offset:       +1.50 cm
+Initial/final pad Z:       +16.35 / +2.16 cm
+Minimum |Z error|:         0.25 cm
+
+PHYSICAL OUTCOME
+--------------------------------------------------------------------
+Contact occurred:          YES
+First contact frame:       146
+Grasp occurred:            YES
+First grasp frame:         146
+Maximum tumbler lift:      8.17 cm
+Lift success:              YES

@@ -261,6 +261,13 @@ Outcome and Motivation for Iteration 2:
 ---
 ### 3.2 Iteration 2: 60° Camera Calibration and Gain Correction - Reaching the Tumbler Region
 
+<p align="center">
+  <img src="media/cup_lifting_01_iteration_2.gif" width="560" alt="Iteration 2: 60° Camera Calibration and Gain Correction" />
+  <br>
+  <em><b>Iteration 2: 60° Camera Calibration and Gain Correction</b>: Left: CoTracker3 human-hand tracking. Right: simulated Franka Panda executing the retargeted trajectory. Based on below configuration and changes. </em>
+</p>
+
+
 Configuration
 Camera tilt: 60°
 Position gain: 8.0
@@ -369,6 +376,13 @@ Iteration 4 Target:
 
 ### 3.4 Iteration 4: EEF-to-Pad Offset Correction — First Physical Contact
 
+<p align="center">
+  <img src="media/cup_lifting_01_iteration_2.gif" width="560" alt="Iteration 4: EEF-to-Pad Offset Correction — First Physical Contact" />
+  <br>
+  <em><b>Iteration 4: EEF-to-Pad Offset Correction — First Physical Contact</b>: Left: CoTracker3 human-hand tracking. Right: simulated Franka Panda executing the retargeted trajectory. Based on below configuration and changes. </em>
+</p>
+
+
 Configuration:
 - Camera tilt: 60° (unchanged)
 - Position gain: 8.0 (unchanged)
@@ -406,6 +420,12 @@ Engineering Deduction:
 ---
 
 ### 3.5 Iteration 5: Goal-Directed Pad Targeting — FIRST SUCCESSFUL GRASP & LIFT 🎉
+
+<p align="center">
+  <img src="media/cup_lifting_01_iteration_5.gif" width="560" alt="Iteration 5: Goal-Directed Pad Targeting — FIRST SUCCESSFUL GRASP & LIFT" />
+  <br>
+  <em><b>Iteration 4: EEF-to-Pad Offset Correction — First Physical Contact</b>: Left: CoTracker3 human-hand tracking. Right: simulated Franka Panda executing the retargeted trajectory. Based on below configuration and changes. </em>
+</p>
 
 Configuration:
 - Camera tilt: 60° (unchanged)
@@ -457,7 +477,155 @@ Why It Worked:
 
 ---
 
-### 3.6 Iteration 4 (Reference): Material Physics Calibration — Hollow Steel Density & Contact Friction
+### 3.6 Iteration 6: Wrist Squaring (q7: π/4 → 0) — Symmetric Grasp Attempt
+
+<p align="center">
+  <img src="media/cup_lifting_01_iteration_6.gif" width="560" alt="Iteration 6: Goal-Directed Pad Targeting — FIRST SUCCESSFUL GRASP & LIFT" />
+  <br>
+  <em><b>Iteration 4: EEF-to-Pad Offset Correction — First Physical Contact</b>: Left: CoTracker3 human-hand tracking. Right: simulated Franka Panda executing the retargeted trajectory. Based on below configuration and changes. </em>
+</p>
+
+Configuration:
+- Camera tilt: 60° (unchanged)
+- Position gain: 8.0 (unchanged)
+- Retargeting: goal-directed pad targeting from Iteration 5 (unchanged)
+- **New parameter**: `q7 = 0` in `glass_lift_env.py` `square_qpos` (was `π/4 = 45°`)
+
+Purpose:
+ Iteration 5 achieved a successful lift (+8.22 cm) but visual inspection revealed the gripper pads approached at a **45° diagonal angle** — one pad contacted the glass rim before the other, producing an asymmetric sideways pinch rather than a centered parallel-jaw wrap. The reference repository's README identifies this diagonal approach as a key failure mode.
+
+ The Panda's 7th joint (`q7`) controls wrist rotation around the vertical axis. At the RoboSuite default of `q7 = π/4`, the finger pads open along a 45°-rotated axis. Setting `q7 = 0` squares the pads so they open along the world Y axis, perpendicular to the X approach direction.
+
+Implementation:
+ In `src/simulation/glass_lift_env.py`, changed the last element of `square_qpos`:
+```python
+# Before (Iteration 5):
+square_qpos = np.array([0, np.pi/16.0, 0.00, -np.pi/2.0 - np.pi/3.0, 0.00, np.pi - 0.2, np.pi/4])
+#                                                                                            ^^^^^ 45°
+
+# After (Iteration 6):
+square_qpos = np.array([0, np.pi/16.0, 0.00, -np.pi/2.0 - np.pi/3.0, 0.00, np.pi - 0.2, 0])
+#                                                                                          ^ 0°
+```
+
+Measured Results:
+
+| Measurement | Iteration 5 | **Iteration 6** |
+|---|---|---|
+| Contact occurred | YES (frame 148) | **YES (frame 148)** |
+| Grasp occurred | YES (frame 148) | **YES (frame 148)** |
+| Lift success | YES | **YES** |
+| Maximum tumbler lift | +8.22 cm | **+8.27 cm** |
+| Min EEF-object dist | 2.97 cm | **2.89 cm** |
+| EEF horizontal XY offset | 2.71 cm | **2.61 cm** |
+| Min pad-to-center dist | 4.39 cm | 4.37 cm |
+| Left surface clearance | 0.84 cm | **0.80 cm** |
+| Right surface clearance | 0.83 cm | **0.79 cm** |
+| Left vertical offset | +1.94 cm | **+1.99 cm** |
+| Pad separation @ pad closest | 5.43 cm | 5.59 cm |
+| Min pad separation (episode) | 4.83 cm (frame 212) | 4.92 cm (frame 0) |
+
+Observations:
+ The wrist squaring produced marginal quantitative improvement: horizontal offset 2.71→2.61 cm, surface clearance 0.84→0.80 cm, lift height 8.22→8.27 cm. The grasp and lift remain successful.
+
+ **However**, visual inspection (simulation screenshot) reveals the gripper is **still approaching from the side, not from directly above**. The pads pinch the upper rim of the glass cylinder sideways rather than wrapping symmetrically around the cylinder walls at mid-height. The reference repository achieves a centered overhead approach where the pads descend to mid-cylinder height and then close horizontally around the widest diameter.
+
+Remaining Problem — Sideways vs Centered Approach:
+ The root cause is **not wrist rotation** but **approach trajectory geometry**:
+
+1. **Vertical offset (dZ = -1.25 cm)**: At closest approach (frame 142), the EEF is 1.25 cm *below* the glass center, meaning the pads arrive at the rim/top of the glass rather than at its center height.
+2. **Horizontal offset (dX = +2.61 cm)**: The EEF origin is still 2.61 cm offset from the glass in X, causing the pads to arrive from the side.
+3. **Pad vertical offset (+1.99 cm)**: At pad closest approach (frame 150), the pads are 1.99 cm *above* the glass center — they are descending past the glass and pinching the top edge, not wrapping around the mid-wall.
+
+ The reference repo achieves centered grasping through a `goal_directed_reach` function that computes the reach vector from hand to glass in image space and projects it through camera geometry, ensuring the gripper descends to the correct height and approaches from directly above.
+
+Engineering Deduction:
+ Wrist squaring (q7 = 0) alone is insufficient. The next iteration needs to address the **approach descent profile** — the gripper must stop descending at glass mid-height (Z ≈ 0.857 m) before closing, rather than descending past the glass and pinching from the side. This is a Z-axis trajectory calibration problem, not a wrist rotation problem.
+
+---
+### 3.6 Iteration 7: Object-Relative X/Z Feedback with Adaptive Blending
+
+
+<p align="center">
+  <img src="media/cup_lifting_01_iteration_7.gif" width="560" alt="Iteration 7: Goal-Directed Pad Targeting — FIRST SUCCESSFUL GRASP & LIFT" />
+  <br>
+  <em><b>Iteration 4: EEF-to-Pad Offset Correction — First Physical Contact</b>: Left: CoTracker3 human-hand tracking. Right: simulated Franka Panda executing the retargeted trajectory. Based on below configuration and changes. </em>
+</p>
+
+"""python
+source /home/nvidia/Documents/Pollex/.venv/bin/activate && \
+export PYTHONPATH="$HOME/Documents/vla/LIBERO:$PYTHONPATH" && \
+export DISPLAY=:10 && \
+export XAUTHORITY="$HOME/.Xauthority" && \
+unset MUJOCO_GL && \
+unset QT_DEBUG_PLUGINS && \
+unset QT_PLUGIN_PATH && \
+unset QT_QPA_PLATFORM_PLUGIN_PATH && \
+cd /home/nvidia/Documents/Pollex && \
+python3 -m src.simulation.replay_trajectory   --actions datasets/cotracker_iterations/iteration_09_x_bias/cup_lifting_01_ct_actions.npz   --out_video datasets/cotracker_iterations/iteration_19_blended_feedback/cup_lifting_01_iteration_19.mp4   --out_dataset datasets/cotracker_iterations/iteration_19_blended_feedback/cup_lifting_01_replay.npz   --human_video datasets/cotracker_trajectories/cup_lifting_01_ct_annotated.mp4   --task GlassLift   --closed_loop_pregrasp   --target_pad_x_offset -0.017   --pregrasp_kp_x 4.0   --pregrasp_max_correction 0.07   --pregrasp_deadband_m 0.002   --target_pad_z_offset 0.015   --pregrasp_kp_z 3.0   --pregrasp_max_z_correction 0.04   --pregrasp_z_deadband_m 0.002   --pregrasp_control_start_frac 0.45   --grasp_ready_x_tolerance_m 0.003   --grasp_ready_z_tolerance_m 0.002   --grasp_ready_consecutive_frames 3   --grasp_control_hold_frames 6   --gui
+"""
+
+Iteration 7 replaces fixed workspace targeting with object-relative feedback. The controller measures the finger-pad center relative to the tumbler and regulates X toward −1.70 cm and Z toward +1.50 cm. The human-derived CoTracker trajectory remains the coarse motion prior, but adaptive blending reduces its influence near the target so feedback can maintain the desired grasp geometry.
+
+
+          Tumbler pose + finger-pad pose
+                     │
+                     ▼
+             Pad center relative
+                 to tumbler
+                     │
+              ┌──────┴──────┐
+              ▼             ▼
+         Relative X     Relative Z
+         feedback       feedback
+              └──────┬──────┘
+                     ▼
+                 X/Z ready?
+                     │
+            3 consecutive frames
+                     ▼
+               CLOSE GRIPPER
+                     ▼
+              Physical grasp
+                     ▼
+                    LIFT
+
+The controller was tested with the tumbler shifted in X while keeping the same demonstration and relative targets. With the −2 cm displacement, the final pad-X offset improved to −1.61 cm against the −1.70 cm target, with minimum X error reaching 0.00 cm. The strict geometry trigger fell back to the demonstrated frame because minimum Z error remained 0.25 cm, slightly outside the 0.20 cm threshold. Despite this, physical contact, grasp, and lift all succeeded, reaching 8.17 cm of tumbler lift. This shows the progression from Iteration 5's fixed correction to an object-relative controller that can compensate for changes in object position while preserving successful grasp and lift.
+
+
+
+
+
+
+
+
+### 3.7 Iteration 8: Comotion
+
+Next iteration: Co-Motion Lift/Transport Latch
+
+Use CoTracker hand and tumbler velocities:
+
+ρt=vˉhand(t)⋅vˉglass(t)∥vˉhand(t)∥∥vˉglass(t)∥+ϵ\rho_t = \frac{\bar{\mathbf v}_{hand}(t)\cdot\bar{\mathbf v}_{glass}(t)} {\|\bar{\mathbf v}_{hand}(t)\|\|\bar{\mathbf v}_{glass}(t)\|+\epsilon}ρt​=∥vˉhand​(t)∥∥vˉglass​(t)∥+ϵvˉhand​(t)⋅vˉglass​(t)​
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### 3.7 Iteration 4 (Reference): Material Physics Calibration — Hollow Steel Density & Contact Friction
 
 <p align="center">
   <img src="media/old_videos/.gif" width="560" alt="Iteration 4: Hollow Tumbler Density and Friction" />
@@ -481,7 +649,7 @@ Why It Worked:
 
 ---
 
-### 3.7 Iteration 5 (Reference): Gripper Squaring (45° → 0°) & Action Synchronization — First Successful Lift
+### 3.8 Iteration 5 (Reference): Gripper Squaring (45° → 0°) & Action Synchronization — First Successful Lift
 
 <p align="center">
   <img src="data/old_videos/Vid_0_ct_iter4_gripper_squaring_lift.gif" width="560" alt="Iteration 5: Gripper Squaring and First Successful Lift" />
@@ -507,7 +675,7 @@ Why It Worked:
 
 ---
 
-### 3.8 Iteration 6 (Reference): Co-Motion Velocity Latch (ρ_t > 0.55) — Expert Demonstration Pick & Place
+### 3.9 Iteration 6 (Reference): Co-Motion Velocity Latch (ρ_t > 0.55) — Expert Demonstration Pick & Place
 
 <p align="center">
   <img src="data/old_videos/Vid_0_ct_iter5_final_pick_place.gif" width="560" alt="Iteration 6: Final Autonomous Pick and Place" />
@@ -554,6 +722,7 @@ camera_tilt_deg = 0.0
 | **3: Grasp Geometry Diagnostic** | EEF origin reaches 3.80 cm but finger pads pass 4.35 cm from glass axis | Constant ~4.3 cm lateral offset between retargeting EEF target and actual pad positions; gripper closes on empty space | Pads closest at frame 154 (not frame 98); 1.25 cm surface clearance; 8.70 cm pad separation at EEF closest frame; no contact, no grasp, no lift |
 | **4: EEF-to-Pad Offset** | 4.3 cm offset spread over 115 frames = 0.00037 m/frame, below OSC sensitivity | Diluted correction absorbed by EMA smoothing; contact only during retract, not approach | First contact (frame 201); 1.20 cm clearance; no grasp, no lift |
 | **5: Goal-Directed Pad Targeting** 🎉 | Concentrated offset + distance deceleration | 5-frame burst (0.0086/frame) large enough for OSC; dist_gain prevents overshoot | **GRASP + LIFT SUCCESS: +8.22 cm** — first successful pick-up |
+| **6: Wrist Squaring (q7→0)** | 45° diagonal wrist rotation causes asymmetric pad contact | Squaring to 0° gives marginal improvement; real problem is sideways approach trajectory, not wrist angle | Lift +8.27 cm; clearance 0.80 cm; still gripping from side not center |
 | **4 (Ref): Material & Friction** | Solid steel density (7850 kg/m³) overloaded gripper; smooth surface slipped | Hollow tumbler density 450 kg/m³ + high friction μ=2.0 enables firm clamping | Firm pad contact without slippage; 45° approach angle still prevents wrap-around grasp |
 | **5 (Ref): Gripper Squaring** | q7 = π/4 diagonal wrist causes one pad to hit rim early, bumping glass away | Squaring wrist to 0° aligns parallel jaws perpendicular to approach, matching human grasp geometry | **LIFT SUCCESS** — first clean lift off the table |
 | **6 (Ref): Co-Motion Velocity Latch** | Hardcoded frame intervals cannot generalize across demonstration speeds | Velocity co-motion correlation ρ_t > 0.55 latches gripper closure automatically | **PICK & PLACE: 7.2 cm [SUCCESS]** — fully automated retargeting across clips |
