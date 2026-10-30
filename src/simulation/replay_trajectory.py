@@ -3,6 +3,32 @@ Trajectory Replayer & Side-by-Side Visualizer
 Executes retargeted 7D actions in the simulation environment,
 records robot rollouts, and compiles a synchronized side-by-side video:
 [Left: Real Hand Video | Right: Simulated Panda Robot].
+
+export PYTHONPATH="$HOME/Documents/vla/LIBERO:$PYTHONPATH"
+
+export DISPLAY=:10
+export XAUTHORITY="$HOME/.Xauthority"
+
+unset MUJOCO_GL
+unset QT_DEBUG_PLUGINS
+unset QT_PLUGIN_PATH
+unset QT_QPA_PLATFORM_PLUGIN_PATH
+
+python3 -m src.simulation.replay_trajectory \
+    --actions datasets/cotracker_iterations/iteration_01_raw/cup_lifting_01_ct_actions.npz \
+    --out_video datasets/cotracker_iterations/iteration_01_raw/cup_lifting_01_iteration_1.mp4 \
+    --out_dataset datasets/cotracker_iterations/iteration_01_raw/cup_lifting_01_replay.npz \
+    --task GlassLift
+
+To see the simulation window and use annotated human video:
+
+python3 -m src.simulation.replay_trajectory \
+    --actions datasets/cotracker_iterations/iteration_01_raw/cup_lifting_01_ct_actions.npz \
+    --out_video datasets/cotracker_iterations/iteration_01_raw/cup_lifting_01_iteration_1.mp4 \
+    --out_dataset datasets/cotracker_iterations/iteration_01_raw/cup_lifting_01_replay.npz \
+    --human_video datasets/cotracker_trajectories/cup_lifting_01_ct_annotated.mp4 \
+    --task GlassLift \
+    --gui
 """
 
 import cv2
@@ -26,28 +52,8 @@ def replay_actions_and_record(
 ):
     """
     Executes actions inside the simulator and outputs synchronized comparison video.
-
-        The function optionally saves:
-
-        1. A synchronized side-by-side video:
-               [Real Human Video | Simulated Panda]
-
-        2. A paired NPZ dataset containing:
-               simulation frames
-               human frames
-               robot actions
-               actual robot end-effector positions
-
-        For the Iteration-1 experiment, the function additionally records:
-
-               actual end-effector positions
-               actual tumbler positions, if exposed by PandaSimEnvironment
-               contact state, if exposed by PandaSimEnvironment
-               grasp state, if exposed by PandaSimEnvironment
-               rewards
-               executed actions
-
-        It also creates metrics.txt next to the comparison video.
+    Records physical measurements from MuJoCo: tumbler position, contact, grasp.
+    Saves metrics.txt, optional paired NPZ dataset, and side-by-side video.
     """
 
     # 1. INPUT ACTION FILE
@@ -59,7 +65,6 @@ def replay_actions_and_record(
     data = np.load(actions_file)
     actions = data["actions"]
 
-    # Load human video frames: prefer external MP4 over embedded rgb_frames
     human_frames = None
     if human_video_path is not None:
         vid_path = Path(human_video_path)
@@ -99,54 +104,40 @@ def replay_actions_and_record(
         camera_name="agentview", camera_height=256, camera_width=256,
     )
 
-    # 4. RESET SIMULATION
+    # 4. RESET AND READ INITIAL PHYSICAL STATE
     obs = env.reset()
-    if isinstance(obs, dict):
-        print("[*] Observation keys:", sorted(obs.keys()))
+    print("[*] Observation keys:", sorted(obs.keys()))
 
+    initial_eef_pos = None
+    eef_value = obs.get("robot_eef_pos")
+    if eef_value is not None:
+        initial_eef_pos = np.asarray(eef_value, dtype=np.float32).copy()
+
+    # Read initial tumbler position directly from standardized interface
+    initial_tumbler_pos = None
+    tumbler_pos_source = obs.get("tumbler_pos_source")
+    tumbler_init = obs.get("tumbler_pos")
+    if tumbler_init is not None:
+        tumbler_init = np.asarray(tumbler_init, dtype=np.float32).reshape(-1)[:3].copy()
+        if tumbler_init.shape == (3,) and np.all(np.isfinite(tumbler_init)):
+            initial_tumbler_pos = tumbler_init
+            print(f"[PHYSICS] Initial tumbler XYZ: {initial_tumbler_pos}")
+            print(f"[PHYSICS] Source: {tumbler_pos_source}")
+        else:
+            print(f"[PHYSICS] ERROR: Invalid initial tumbler position: {tumbler_init}")
+    else:
+        print("[PHYSICS] ERROR: tumbler_pos is None after reset")
+
+    # Storage arrays
     sim_frames = []
     recorded_robot_states = []
+    recorded_robot_state_frames = []
     recorded_tumbler_positions = []
     recorded_tumbler_frames = []
     recorded_contacts = []
     recorded_grasps = []
     recorded_rewards = []
     recorded_actions = []
-    recorded_robot_state_frames = []
-
-    initial_eef_pos = None
-    initial_tumbler_pos = None
-
-    if isinstance(obs, dict):
-        initial_eef_value = obs.get("robot_eef_pos", None)
-        if initial_eef_value is not None:
-            initial_eef_pos = np.asarray(initial_eef_value, dtype=np.float32).copy()
-
-    # Tumbler observation key discovery
-    tumbler_pos_key = None
-    possible_tumbler_pos_keys = ("tumbler_pos", "glass_pos", "object_pos", "Glass_pos", "cube_pos")
-
-    if isinstance(obs, dict):
-        for candidate_key in possible_tumbler_pos_keys:
-            if candidate_key in obs and obs[candidate_key] is not None:
-                if np.asarray(obs[candidate_key]).size >= 3:
-                    tumbler_pos_key = candidate_key
-                    break
-
-    if tumbler_pos_key is not None:
-        initial_tumbler_pos = np.asarray(obs[tumbler_pos_key], dtype=np.float32).reshape(-1)[:3].copy()
-        print(f"[+] Using tumbler position observation key: '{tumbler_pos_key}'")
-        print(f"[*] Initial tumbler XYZ: {initial_tumbler_pos}")
-    else:
-        print("[!] PandaSimEnvironment does not currently expose a recognized tumbler XYZ observation.")
-        print("[!] Tumbler height / lift metrics will remain UNAVAILABLE until the actual MuJoCo object position is exposed by libero_runner.py.")
-
-    contact_signal_seen = False
-    grasp_signal_seen = False
-    contact_source_name = None
-    grasp_source_name = None
-    possible_contact_keys = ("tumbler_contact", "glass_contact", "object_contact", "contact", "has_contact")
-    possible_grasp_keys = ("tumbler_grasped", "glass_grasped", "object_grasped", "grasped", "is_grasped", "grasp")
 
     # 5. REPLAY EVERY ROBOT ACTION
     for t in range(T):
@@ -157,86 +148,55 @@ def replay_actions_and_record(
         recorded_rewards.append(float(reward))
 
         # 6. RECORD SIMULATION RGB FRAME
-        if isinstance(obs, dict) and obs.get("rgb", None) is not None:
+        if obs.get("rgb") is not None:
             sim_frames.append(np.asarray(obs["rgb"], dtype=np.uint8).copy())
 
         # 7. RECORD ACTUAL PANDA END-EFFECTOR POSITION
         eef_pos = None
-        if isinstance(obs, dict):
-            eef_value = obs.get("robot_eef_pos", None)
-            if eef_value is not None:
-                eef_pos = np.asarray(eef_value, dtype=np.float32).reshape(-1)[:3].copy()
-                recorded_robot_states.append(eef_pos)
-                recorded_robot_state_frames.append(t)
+        eef_value = obs.get("robot_eef_pos")
+        if eef_value is not None:
+            eef_pos = np.asarray(eef_value, dtype=np.float32).reshape(-1)[:3].copy()
+            recorded_robot_states.append(eef_pos)
+            recorded_robot_state_frames.append(t)
 
-        # 8. RECORD ACTUAL TUMBLER POSITION
+        # 8. RECORD ACTUAL TUMBLER POSITION (from MuJoCo body_xpos)
         tumbler_pos = None
-        if tumbler_pos_key is not None and isinstance(obs, dict) and obs.get(tumbler_pos_key, None) is not None:
-            tumbler_pos = np.asarray(obs[tumbler_pos_key], dtype=np.float32).reshape(-1)[:3].copy()
-            recorded_tumbler_positions.append(tumbler_pos)
-            recorded_tumbler_frames.append(t)
+        tp = obs.get("tumbler_pos")
+        if tp is not None:
+            tumbler_pos = np.asarray(tp, dtype=np.float32).reshape(-1)[:3].copy()
+            if tumbler_pos.shape == (3,) and np.all(np.isfinite(tumbler_pos)):
+                recorded_tumbler_positions.append(tumbler_pos)
+                recorded_tumbler_frames.append(t)
+            else:
+                print(f"[PHYSICS] ERROR: Invalid tumbler position at frame {t}: {tumbler_pos}")
+                tumbler_pos = None
+        else:
+            print(f"[PHYSICS] ERROR: tumbler_pos missing at frame {t}")
 
-        # 9. RECORD PHYSICAL CONTACT (must come from SIMULATOR, not gripper command)
-        contact_value = None
-        if isinstance(info, dict):
-            for candidate_key in possible_contact_keys:
-                if candidate_key in info:
-                    contact_value = bool(info[candidate_key])
-                    contact_source_name = f"info['{candidate_key}']"
-                    contact_signal_seen = True
-                    break
+        # 9. RECORD PHYSICAL CONTACT (from MuJoCo contact pairs)
+        contact_value = obs.get("tumbler_contact")
+        recorded_contacts.append(float(contact_value) if contact_value is not None else np.nan)
 
-        if contact_value is None and isinstance(obs, dict):
-            for candidate_key in possible_contact_keys:
-                if candidate_key in obs:
-                    contact_value = bool(obs[candidate_key])
-                    contact_source_name = f"obs['{candidate_key}']"
-                    contact_signal_seen = True
-                    break
+        # 10. RECORD PHYSICAL GRASP (from RoboSuite _check_grasp)
+        grasp_value = obs.get("tumbler_grasped")
+        recorded_grasps.append(float(grasp_value) if grasp_value is not None else np.nan)
 
-        # NaN = signal unavailable, False = simulator says no contact
-        recorded_contacts.append(np.nan if contact_value is None else float(contact_value))
-
-        # 10. RECORD PHYSICAL GRASP (must be simulation observation, not action vector)
-        grasp_value = None
-        if isinstance(info, dict):
-            for candidate_key in possible_grasp_keys:
-                if candidate_key in info:
-                    grasp_value = bool(info[candidate_key])
-                    grasp_source_name = f"info['{candidate_key}']"
-                    grasp_signal_seen = True
-                    break
-
-        if grasp_value is None and isinstance(obs, dict):
-            for candidate_key in possible_grasp_keys:
-                if candidate_key in obs:
-                    grasp_value = bool(obs[candidate_key])
-                    grasp_source_name = f"obs['{candidate_key}']"
-                    grasp_signal_seen = True
-                    break
-
-        recorded_grasps.append(np.nan if grasp_value is None else float(grasp_value))
-
-        # 11. ITERATION-1 PER-FRAME REPLAY LOG
+        # 11. PER-FRAME LOG
         eef_text = np.array2string(eef_pos, precision=4) if eef_pos is not None else "N/A"
         tumbler_text = np.array2string(tumbler_pos, precision=4) if tumbler_pos is not None else "N/A"
-        contact_text = str(contact_value) if contact_value is not None else "N/A"
-        grasp_text = str(grasp_value) if grasp_value is not None else "N/A"
-
         print(
             f"[REPLAY] frame={t:04d} action_xyz=[{action[0]:+.3f}, {action[1]:+.3f}, {action[2]:+.3f}] "
             f"grip={action[6]:+.1f} eef={eef_text} tumbler={tumbler_text} "
-            f"contact={contact_text} grasp={grasp_text} reward={float(reward):.4f}"
+            f"contact={contact_value} grasp={grasp_value} reward={float(reward):.4f}"
         )
 
-        # 12. OPTIONAL LIVE RENDERING
         if render_gui:
             env.render()
 
     env.close()
     print(f"[+] Replay finished. Captured {len(sim_frames)} simulation frames.")
 
-    # 13. CONVERT RECORDED PHYSICAL DATA TO NUMPY ARRAYS
+    # 13. CONVERT TO NUMPY ARRAYS
     executed_actions = np.asarray(recorded_actions, dtype=np.float32)
     rewards = np.asarray(recorded_rewards, dtype=np.float32)
     eef_positions = np.asarray(recorded_robot_states, dtype=np.float32)
@@ -272,40 +232,56 @@ def replay_actions_and_record(
     initial_tumbler_z = maximum_tumbler_z = maximum_tumbler_lift = np.nan
     lift_success = None
 
-    if len(tumbler_positions) > 0:
-        if initial_tumbler_pos is None:
-            initial_tumbler_pos = tumbler_positions[0].copy()
+    if len(tumbler_positions) > 0 and initial_tumbler_pos is not None:
         initial_tumbler_z = float(initial_tumbler_pos[2])
         maximum_tumbler_z = float(np.max(tumbler_positions[:, 2]))
         maximum_tumbler_lift = float(maximum_tumbler_z - initial_tumbler_z)
         lift_success = bool(maximum_tumbler_lift >= LIFT_SUCCESS_THRESHOLD_M)
 
-    # 16. DETERMINE CONTACT / GRASP OUTCOMES
-    if contact_signal_seen:
-        valid_contacts = contact_flags[np.isfinite(contact_flags)]
+    # 16. MINIMUM EEF-TO-TUMBLER DISTANCE
+    min_eef_tumbler_distance = np.nan
+    closest_approach_frame = -1
+
+    n_paired = min(len(eef_positions), len(tumbler_positions))
+    if n_paired > 0:
+        eef_tumbler_distances = np.linalg.norm(eef_positions[:n_paired] - tumbler_positions[:n_paired], axis=1)
+        min_eef_tumbler_distance = float(np.min(eef_tumbler_distances))
+        closest_approach_frame = int(np.argmin(eef_tumbler_distances))
+
+    # 17. CONTACT / GRASP OUTCOMES
+    contact_occurred = False
+    first_contact_frame = -1
+    valid_contacts = contact_flags[np.isfinite(contact_flags)]
+    if len(valid_contacts) > 0:
         contact_occurred = bool(np.any(valid_contacts > 0.5))
-    else:
-        contact_occurred = None
+        contact_indices = np.where(contact_flags > 0.5)[0]
+        if len(contact_indices) > 0:
+            first_contact_frame = int(contact_indices[0])
 
-    if grasp_signal_seen:
-        valid_grasps = grasp_flags[np.isfinite(grasp_flags)]
+    grasp_occurred = False
+    first_grasp_frame = -1
+    valid_grasps = grasp_flags[np.isfinite(grasp_flags)]
+    if len(valid_grasps) > 0:
         grasp_occurred = bool(np.any(valid_grasps > 0.5))
-    else:
-        grasp_occurred = None
+        grasp_indices = np.where(grasp_flags > 0.5)[0]
+        if len(grasp_indices) > 0:
+            first_grasp_frame = int(grasp_indices[0])
 
-    # 17. SAVE ITERATION-1 METRICS.TXT
+    # 18. SAVE METRICS.TXT
     out_vid_path = Path(output_video_path)
     out_vid_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path = out_vid_path.parent / "metrics.txt"
 
-    def yes_no_unavailable(value):
-        if value is None:
-            return "UNAVAILABLE"
+    def yes_no(value):
         return "YES" if value else "NO"
+
+    def frame_or_na(frame):
+        return str(frame) if frame >= 0 else "N/A"
 
     with open(metrics_path, "w", encoding="utf-8") as f:
         f.write("ITERATION 1: RAW COTRACKER3 BASELINE\n")
         f.write("=" * 68 + "\n\n")
+
         f.write("INPUT / REPLAY\n")
         f.write("-" * 68 + "\n")
         f.write(f"Actions file:              {actions_file}\n")
@@ -318,9 +294,9 @@ def replay_actions_and_record(
         if initial_eef_pos is not None:
             f.write(f"Initial EEF XYZ [m]:       {np.array2string(initial_eef_pos, precision=6)}\n")
             f.write(f"Final EEF XYZ [m]:         {np.array2string(final_eef_pos, precision=6)}\n")
-            f.write(f"Maximum |dX|:             {max_eef_dx * 100.0:.2f} cm\n")
-            f.write(f"Maximum |dY|:             {max_eef_dy * 100.0:.2f} cm\n")
-            f.write(f"Maximum |dZ|:             {max_eef_dz * 100.0:.2f} cm\n")
+            f.write(f"Maximum |dX|:              {max_eef_dx * 100.0:.2f} cm\n")
+            f.write(f"Maximum |dY|:              {max_eef_dy * 100.0:.2f} cm\n")
+            f.write(f"Maximum |dZ|:              {max_eef_dz * 100.0:.2f} cm\n")
             f.write(f"Signed dX range:           {min_eef_dx * 100.0:+.2f} to {max_signed_eef_dx * 100.0:+.2f} cm\n")
             f.write(f"Signed dY range:           {min_eef_dy * 100.0:+.2f} to {max_signed_eef_dy * 100.0:+.2f} cm\n")
             f.write(f"Signed dZ range:           {min_eef_dz * 100.0:+.2f} to {max_signed_eef_dz * 100.0:+.2f} cm\n")
@@ -331,24 +307,29 @@ def replay_actions_and_record(
         f.write("TUMBLER / OBJECT\n")
         f.write("-" * 68 + "\n")
         if initial_tumbler_pos is not None:
-            f.write(f"Tumbler observation key:   {tumbler_pos_key}\n")
+            f.write(f"Tumbler body:              {tumbler_pos_source}\n")
+            f.write(f"Position source:           MuJoCo body_xpos\n")
             f.write(f"Initial tumbler XYZ [m]:   {np.array2string(initial_tumbler_pos, precision=6)}\n")
             f.write(f"Initial tumbler Z:         {initial_tumbler_z:.6f} m\n")
             f.write(f"Maximum tumbler Z:         {maximum_tumbler_z:.6f} m\n")
             f.write(f"Maximum tumbler lift:      {maximum_tumbler_lift * 100.0:.2f} cm\n")
+            f.write(f"Minimum EEF-object dist:   {min_eef_tumbler_distance * 100.0:.2f} cm\n")
+            f.write(f"Closest approach frame:    {frame_or_na(closest_approach_frame)}\n")
         else:
-            f.write("Tumbler position:           UNAVAILABLE\n")
-            f.write("Maximum tumbler lift:       UNAVAILABLE\n")
+            f.write("Tumbler position:          UNAVAILABLE\n")
+            f.write("Maximum tumbler lift:      UNAVAILABLE\n")
         f.write("\n")
 
         f.write("PHYSICAL OUTCOME\n")
         f.write("-" * 68 + "\n")
-        f.write(f"Contact signal source:      {contact_source_name or 'UNAVAILABLE'}\n")
-        f.write(f"Contact occurred:           {yes_no_unavailable(contact_occurred)}\n")
-        f.write(f"Grasp signal source:        {grasp_source_name or 'UNAVAILABLE'}\n")
-        f.write(f"Grasp occurred:             {yes_no_unavailable(grasp_occurred)}\n")
-        f.write(f"Lift threshold:             {LIFT_SUCCESS_THRESHOLD_M * 100.0:.1f} cm\n")
-        f.write(f"Lift success:               {yes_no_unavailable(lift_success)}\n\n")
+        f.write(f"Contact signal source:     MuJoCo contact pairs\n")
+        f.write(f"Contact occurred:          {yes_no(contact_occurred)}\n")
+        f.write(f"First contact frame:       {frame_or_na(first_contact_frame)}\n\n")
+        f.write(f"Grasp signal source:       RoboSuite _check_grasp\n")
+        f.write(f"Grasp occurred:            {yes_no(grasp_occurred)}\n")
+        f.write(f"First grasp frame:         {frame_or_na(first_grasp_frame)}\n\n")
+        f.write(f"Lift threshold:            {LIFT_SUCCESS_THRESHOLD_M * 100.0:.1f} cm\n")
+        f.write(f"Lift success:              {yes_no(lift_success) if lift_success is not None else 'UNAVAILABLE'}\n\n")
 
         f.write("RESULT\n")
         f.write("-" * 68 + "\n")
@@ -357,12 +338,11 @@ def replay_actions_and_record(
         elif lift_success is False:
             f.write("Measured result: physical lift threshold was not reached.\n")
         else:
-            f.write("Measured result: lift could not be evaluated because the simulator did not expose the tumbler XYZ position.\n")
-        f.write("\nNo qualitative conclusion such as 'arm stationary' is hard-coded. Interpret Iteration 1 from the measured EEF, object, contact, grasp, and lift values above.\n")
+            f.write("Measured result: lift could not be evaluated.\n")
 
     print(f"[+] Saved Iteration-1 metrics -> {metrics_path}")
 
-    # 18. SAVE PAIRED EPISODE FOR LEROBOT TRAINING
+    # 19. SAVE PAIRED EPISODE
     if output_dataset_path:
         out_data_path = Path(output_dataset_path)
         out_data_path.parent.mkdir(parents=True, exist_ok=True)
@@ -382,12 +362,13 @@ def replay_actions_and_record(
             initial_eef_pos=initial_eef_pos if initial_eef_pos is not None else np.full(3, np.nan, dtype=np.float32),
             initial_tumbler_pos=initial_tumbler_pos if initial_tumbler_pos is not None else np.full(3, np.nan, dtype=np.float32),
             max_tumbler_lift=np.float32(maximum_tumbler_lift),
+            min_eef_tumbler_distance=np.float32(min_eef_tumbler_distance),
             lift_success=np.int8(-1 if lift_success is None else int(lift_success)),
             replay_fps=np.float32(replay_fps),
         )
         print(f"[+] Saved paired trajectory dataset -> {out_data_path}")
 
-    # 19. GENERATE SIDE-BY-SIDE COMPARISON VIDEO
+    # 20. GENERATE SIDE-BY-SIDE COMPARISON VIDEO
     out_vid_path.parent.mkdir(parents=True, exist_ok=True)
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     video_writer = cv2.VideoWriter(str(out_vid_path), fourcc, replay_fps, (512, 256))
@@ -406,7 +387,6 @@ def replay_actions_and_record(
             human_bgr = cv2.cvtColor(human_rgb, cv2.COLOR_RGB2BGR)
         else:
             human_bgr = np.zeros_like(sim_bgr)
-            cv2.putText(human_bgr, "Human Video", (30, 128), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
         video_writer.write(np.hstack([human_bgr, sim_bgr]))
 
@@ -429,24 +409,3 @@ if __name__ == "__main__":
         output_dataset_path=args.out_dataset, task_name=args.task, render_gui=args.gui,
         human_video_path=args.human_video,
     )
-
-"""
-python3 -m src.simulation.replay_trajectory \
-    --actions datasets/cotracker_iterations/iteration_01_raw/cup_lifting_01_ct_actions.npz \
-    --out_video datasets/cotracker_iterations/iteration_01_raw/cup_lifting_01_iteration_1.mp4 \
-    --out_dataset datasets/cotracker_iterations/iteration_01_raw/cup_lifting_01_replay.npz \
-    --task GlassLift
-
-"""
-# to see the simulation as well
-"""
-
-python3 -m src.simulation.replay_trajectory \
-    --actions datasets/cotracker_iterations/iteration_01_raw/cup_lifting_01_ct_actions.npz \
-    --out_video datasets/cotracker_iterations/iteration_01_raw/cup_lifting_01_iteration_1.mp4 \
-    --out_dataset datasets/cotracker_iterations/iteration_01_raw/cup_lifting_01_replay.npz \
-    --human_video datasets/cotracker_trajectories/cup_lifting_01_ct_annotated.mp4 \
-    --task GlassLift \
-    --gui
-
-"""

@@ -21,14 +21,13 @@ import cv2
 import numpy as np
 from typing import Dict, Any, Tuple, Optional
 
-# Register GlassLift environment (steel cylinder) before robosuite is called
 try:
     import sys as _sys
     _sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
     from src.simulation.glass_lift_env import register_glass_lift_env
     register_glass_lift_env()
 except Exception:
-    pass  # graceful fallback — GlassLift will just be unavailable
+    pass
 
 
 class PandaSimEnvironment:
@@ -46,23 +45,18 @@ class PandaSimEnvironment:
         camera_width: int = 256,
         control_freq: int = 20,
     ):
-        """
-        Args:
-            env_name: RoboSuite task ("Lift", "PickPlaceCan", "Door") or LIBERO task name.
-            has_renderer: Set True for interactive window on macOS.
-            has_offscreen_renderer: Set True for saving RGB frames to video/dataset.
-            camera_name: Primary camera ("agentview", "frontview", "robot0_eye_in_hand").
-            camera_height: Rendered image height.
-            camera_width: Rendered image width.
-            control_freq: Policy step frequency in Hz (typically 20 Hz).
-        """
         self.env_name = env_name
         self.camera_name = camera_name
         self.camera_height = camera_height
         self.camera_width = camera_width
         self.control_freq = control_freq
 
-        # Attempt to import robosuite
+        self._glass_body_id = None
+        self._glass_body_name = None
+        self._glass_geom_ids = set()
+        self._gripper_contact_geom_ids = set()
+        self._physics_available = False
+
         try:
             import robosuite as suite
             from robosuite.controllers import load_controller_config
@@ -85,102 +79,128 @@ class PandaSimEnvironment:
                 initialization_noise=None,
             )
 
-            # ============================================================
-            # DEBUG / VERIFY ROBOSUITE ACTION SPACE
-            # ============================================================
-
             action_low, action_high = self.env.action_spec
-
-            print(
-                f"[*] RoboSuite action dimension: "
-                f"{len(action_low)}"
-            )
-
-            print(
-                f"[*] Action low:  {action_low}"
-            )
-
-            print(
-                f"[*] Action high: {action_high}"
-            )
-
-            # RoboSuite composite controllers can expose the semantic
-            # structure of the action vector through the robot.
-            try:
-                print("\n[*] Panda action structure:")
-
-                for robot in self.env.robots:
-                    if hasattr(robot, "print_action_info"):
-                        robot.print_action_info()
-
-            except Exception as action_info_error:
-                print(
-                    "[!] Could not print action structure: "
-                    f"{action_info_error}"
-                )
-
-
+            print(f"[*] RoboSuite action dimension: {len(action_low)}")
+            print(f"[*] Action low:  {action_low}")
+            print(f"[*] Action high: {action_high}")
 
             self.is_libero = False
-
-            print(
-                f"[+] Loaded RoboSuite environment "
-                f"'{env_name}' with Franka Panda."
-            )
+            print(f"[+] Loaded RoboSuite environment '{env_name}' with Franka Panda.")
 
         except ImportError as e:
-            raise ImportError(
-                "Could not import robosuite.\n"
-                f"Original error: {e}"
-            )
+            raise ImportError(f"Could not import robosuite.\nOriginal error: {e}")
 
     def reset(self) -> Dict[str, Any]:
-        """Resets the environment and returns the initial observation."""
         obs = self.env.reset()
+        self._init_physics_ids()
         return self._format_obs(obs)
 
+    def _init_physics_ids(self):
+        """Cache MuJoCo body/geom IDs for glass and gripper after first reset."""
+        if self._physics_available:
+            return
+        if not (hasattr(self.env, "cube") and hasattr(self.env, "sim")):
+            print("[PHYSICS] No glass object in this environment — physics measurements disabled.")
+            return
+
+        try:
+            model = self.env.sim.model
+            self._glass_body_name = self.env.cube.root_body
+            self._glass_body_id = model.body_name2id(self._glass_body_name)
+
+            for i in range(model.ngeom):
+                if model.geom_bodyid[i] == self._glass_body_id:
+                    name = model.geom_id2name(i)
+                    if name and "vis" not in name:
+                        self._glass_geom_ids.add(i)
+
+            gripper_collision_names = {
+                "gripper0_finger1_collision",
+                "gripper0_finger1_pad_collision",
+                "gripper0_finger2_collision",
+                "gripper0_finger2_pad_collision",
+            }
+            for i in range(model.ngeom):
+                name = model.geom_id2name(i)
+                if name in gripper_collision_names:
+                    self._gripper_contact_geom_ids.add(i)
+
+            self._physics_available = True
+
+            initial_pos = self.env.sim.data.body_xpos[self._glass_body_id].copy()
+            print(f"[PHYSICS] Glass body name: {self._glass_body_name}")
+            print(f"[PHYSICS] Glass body ID: {self._glass_body_id}")
+            print(f"[PHYSICS] Glass collision geom IDs: {sorted(self._glass_geom_ids)}")
+            print(f"[PHYSICS] Gripper collision geom IDs: {sorted(self._gripper_contact_geom_ids)}")
+            print(f"[PHYSICS] Initial tumbler XYZ: {initial_pos}")
+            print(f"[PHYSICS] Tumbler position source: MuJoCo body_xpos")
+
+        except Exception as e:
+            print(f"[PHYSICS] Failed to initialize physics IDs: {e}")
+
+    def _get_tumbler_pos(self) -> Optional[np.ndarray]:
+        if not self._physics_available:
+            return None
+        pos = self.env.sim.data.body_xpos[self._glass_body_id].copy()
+        if pos.shape == (3,) and np.all(np.isfinite(pos)):
+            return pos
+        print(f"[PHYSICS] Invalid tumbler position: {pos}")
+        return None
+
+    def _get_tumbler_contact(self) -> bool:
+        """True if any gripper finger/pad geom is in contact with the glass collision geom."""
+        if not self._physics_available:
+            return False
+        for i in range(self.env.sim.data.ncon):
+            c = self.env.sim.data.contact[i]
+            g1, g2 = c.geom1, c.geom2
+            if (g1 in self._glass_geom_ids and g2 in self._gripper_contact_geom_ids) or \
+               (g2 in self._glass_geom_ids and g1 in self._gripper_contact_geom_ids):
+                return True
+        return False
+
+    def _get_tumbler_grasped(self) -> bool:
+        """Uses RoboSuite's built-in _check_grasp which tests that both fingers contact the object."""
+        if not self._physics_available:
+            return False
+        try:
+            return bool(self.env._check_grasp(self.env.robots[0].gripper, self.env.cube))
+        except Exception:
+            return False
+
     def step(self, action: np.ndarray) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
-        """
-        Executes a 7D action: [dx, dy, dz, droll, dpitch, dyaw, gripper].
-        Returns (obs, reward, done, info).
-        """
         assert len(action) == 7, f"Action must be 7-dimensional, got {len(action)}"
         obs, reward, done, info = self.env.step(action)
         return self._format_obs(obs), float(reward), bool(done), info
 
     def render(self):
-        """Renders live on-screen if has_renderer is True."""
         if hasattr(self.env, "render"):
             self.env.render()
 
     def close(self):
-        """Cleans up simulation contexts."""
         if hasattr(self.env, "close"):
             self.env.close()
 
     def _format_obs(self, obs: Dict[str, Any]) -> Dict[str, Any]:
-        """Extracts and formats primary RGB frame and robot proprioception."""
         img_key = f"{self.camera_name}_image"
         rgb = obs.get(img_key, None)
-
         if rgb is not None:
             rgb = np.flipud(rgb)
 
-        # Extract glass/object body XYZ from MuJoCo if GlassLiftEnv is active
-        object_pos = None
-        if hasattr(self.env, "cube") and hasattr(self.env, "sim"):
-            try:
-                body_id = self.env.sim.model.body_name2id(self.env.cube.root_body)
-                object_pos = self.env.sim.data.body_xpos[body_id].copy()
-            except Exception:
-                pass
+        tumbler_pos = self._get_tumbler_pos()
+        tumbler_contact = self._get_tumbler_contact()
+        tumbler_grasped = self._get_tumbler_grasped()
 
         return {
             "rgb": rgb,
             "robot_eef_pos": obs.get("robot0_eef_pos", None),
             "robot_eef_quat": obs.get("robot0_eef_quat", None),
             "robot_gripper_qpos": obs.get("robot0_gripper_qpos", None),
-            "object_pos": object_pos,
+            "object_pos": tumbler_pos,
+            "tumbler_pos": tumbler_pos,
+            "tumbler_pos_source": f"body:{self._glass_body_name}" if self._physics_available else None,
+            "tumbler_contact": tumbler_contact,
+            "tumbler_grasped": tumbler_grasped,
             "raw_obs": obs,
         }
 

@@ -85,6 +85,6 @@ if __name__ == "__main__":
         print("Provide --video or --input_dir")
 
 """
-python3 src/tracking_algorithm/video_to_gif.py --video datasets/cotracker_trajectories/cup_lifting_01_ct_annotated.mp4 --output media/cup_lifting_01_ct_annotated.gif --fps 10 --scale 0.5 --max_width 400
+python3 src/tracking_algorithm/video_to_gif.py --video datasets/cotracker_iterations/iteration_01_raw/cup_lifting_01_iteration_1.mp4 --output media/cup_lifting_01_iteration_1.gif --fps 10 --scale 0.5 --max_width 400
 
 """

@@ -29,9 +29,11 @@ class CoTrackerToPandaRetargeter:
     """
 
 
-    # 
+    # edit position_gain, and tilt agnle 
+    # iteration 1 : 10.0, and angle = 0
+    # iteration 2: 8.0 and angle = 60 deg
     # 60.0
-    def __init__(self, camera_tilt_deg: float = 0.0, position_gain: float = 8.0, smoothing_alpha: float = 0.4, max_step_displacement: float = 0.8):
+    def __init__(self, camera_tilt_deg: float = 60.0, position_gain: float = 8.0, smoothing_alpha: float = 0.4, max_step_displacement: float = 0.8):
     
         """
         Initializes the retargeter: 
@@ -268,7 +270,7 @@ class CoTrackerToPandaRetargeter:
                     reach_rate = max(0.002, v_approach) # the robot get always 0.002 reach
                     
                     # This converts "image motion" into table-plane "robot motion".
-                    dx_robot = (reach_rate / max(0.1, self.sin_theta)) * 10.0
+                    dx_robot = (reach_rate / max(0.1, self.sin_theta)) * self.position_gain
                     # sin_theta compensate for camera viewing geometry. 10.0 is essentially a gain.
 
                     # Cylinder is aligned along center Y

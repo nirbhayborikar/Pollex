@@ -229,48 +229,69 @@ The HUD displays `dist: X.XX` alongside `rho`. Run the video and watch:
 ### 3.1 Iteration 1: Raw CoTracker3 Baseline — The Immobility Hurdle
 
 <p align="center">
-  <img src="data/old_videos/Vid_0_ct_iter1_raw_cotracker.gif" width="560" alt="Iteration 1: Raw CoTracker3 Baseline" />
+  <img src="media/cup_lifting_01_iteration_1.gif" width="560" alt="Iteration 1: Raw CoTracker3 Baseline" />
   <br>
-  <em><b>Iteration 1 (Raw CoTracker3)</b>: Left: CoTracker3 tracking | Right: Simulated Panda robot. Arm remains stationary at the back and fails to reach forward.</em>
+  <em><b>Iteration 1 (Raw CoTracker3 Baseline)</b>: Left: CoTracker3 human-hand tracking. Right: simulated Franka Panda executing the uncalibrated retargeted trajectory. The robot performs the expected forward, downward, grasp, and upward motion sequence, but approaches the wrong workspace location and fails to contact or grasp the tumbler. </em>
 </p>
 
-- **Problem Observed**:
-  In our first test with CoTracker3 without modifications (`Vid_0_ct_comparison copy.mp4`), the simulated Panda arm stayed frozen at the back of the workspace and never reached forward toward the glass cylinder.
-- **Root-Cause Deductions**:
-  1. **Centroid Distance without Camera Tilt**: We were computing reaching distance simply by measuring the 2D Euclidean distance between the centroids of the glass and hand in pixel coordinates. Because the chest-mounted camera is tilted down, raw 2D pixel distance does not represent horizontal travel along the tabletop.
-  2. **Initial Pose Misalignment**: The initial forward position ($X$) and vertical height ($Z$) of the robot end-effector were misaligned with the Franka Panda's operational workspace.
-  3. **Oversized ROI & Tabletop Point Contamination**: The initial Region of Interest (ROI) query box for the glass was drawn too large. As a result, points were sampled on the static tabletop surface and reflections. When the hand and glass moved, stationary table points dragged down the computed centroid $\mathbf{c}_{\text{glass}}(t)$, making the glass appear virtually motionless.
+Problem Observed:
+ In the initial baseline experiment, the camera inclination compensation was disabled (camera_tilt_deg = 0°) and the raw CoTracker3 trajectory was retargeted directly to the Franka Panda workspace. The robot was not stationary; instead, it executed a clear sequence of forward motion → downward descent → gripper closure → upward motion. However, visual inspection showed that the end-effector moved away from the required grasp location and descended toward the tabletop rather than correctly aligning the gripper around the tumbler. Consequently, the subsequent gripper closure and upward motion occurred without acquiring the object.
+
+Quantitative Simulation Results:
+ The measured Panda end-effector trajectory confirms substantial robot motion. The end-effector moved up to 34.95 cm along X, only 0.27 cm along Y, and 20.17 cm along Z relative to its initial pose. Despite this considerable motion, the closest measured end-effector-to-tumbler distance was still 13.97 cm, indicating a large spatial alignment error. MuJoCo contact-pair measurements confirmed no physical contact between the Panda gripper and tumbler, while RoboSuite's _check_grasp reported no successful grasp. The 3 cm lift-success criterion was therefore not reached.
+
+Tumbler Response:
+ The tumbler began at the verified MuJoCo position
+
+pglass(0)=[−0.035,  0.000,  0.8575]  m.\mathbf{p}_{glass}(0) = [-0.035,\;0.000,\;0.8575]\;\text{m}.pglass​(0)=[−0.035,0.000,0.8575]m.
+
+Its recorded maximum vertical position was only 0.848439 m, lower than its initial 0.857500 m position. Therefore, there was no positive object lift. The recorded displacement was approximately −0.91 cm, confirming that the upward robot motion did not correspond to lifting the tumbler.
+
+Root-Cause Deductions:
+
+Missing Camera-Inclination Compensation: The baseline used camera_tilt_deg = 0°. The human motion originated from a downward-facing egocentric camera, so its 2D image-plane displacement could not be interpreted directly as horizontal tabletop motion. The resulting coordinate mapping produced a large forward displacement but did not guide the end-effector toward the physical tumbler.
+Workspace Misalignment: Although the Panda moved significantly, the motion was spatially incorrect. The 13.97 cm minimum EEF-to-object distance demonstrates that the failure was not caused by an absence of robot motion, but by incorrect alignment between the image-derived human trajectory and the Panda workspace.
+Insufficient Lateral Correction: The measured Y excursion was only 0.27 cm, while most of the commanded motion occurred along X and Z. This constrained motion prevented the robot from correcting lateral alignment errors during its approach.
+Uncalibrated Tumbler ROI: The baseline also retained the initial uncalibrated object ROI. Any background or tabletop points included in the CoTracker query region could bias the estimated tumbler centroid and therefore further distort the hand-to-object reach direction.
+
+Outcome and Motivation for Iteration 2:
+ Iteration 1 failed to achieve contact, grasp, or lift despite producing substantial end-effector movement. The experiment therefore identified the main baseline limitation as geometric retargeting error rather than robot immobility. This motivated Iteration 2, where the camera inclination is calibrated to 60° and the tumbler ROI is tightened to the measured object boundaries so that the approach trajectory can more accurately represent movement toward the physical tumbler.
+
 
 ---
+## 3.2 Iteration 2: 60° Camera Calibration and Gain Correction - Reaching the Tumbler Region
 
-### 3.2 Iteration 2: 60° Camera Pitch & Tight Glass ROI — Restoring Forward Reach
+Configuration
+Camera tilt: 60°
+Position gain: 8.0
+Tumbler ROI: unchanged
+Physics: unchanged from Iteration 1
+Gripper geometry: unchanged
 
-<p align="center">
-  <img src="data/old_videos/Vid_0_ct_iter2_camera_roi_fix.gif" width="560" alt="Iteration 2: 60 Deg Camera Pitch and Tight ROI" />
-  <br>
-  <em><b>Iteration 2 (Pitch & ROI Fix)</b>: Left: Tight ROI CoTracker3 | Right: Panda arm reaches forward and touches cylinder, but cannot pick it up.</em>
-</p>
+Problem Observed:
+ In Iteration 2, the camera inclination was corrected from 0° to 60° and the translational position gain was reduced from 10.0 to 8.0. Unlike the raw baseline, the Panda now moved substantially closer to the physical tumbler. Visually, the gripper reached the correct general object region; however, the rigid central gripper/wrist structure approached above the tumbler while the finger geometry did not correctly surround the cylinder. Consequently, the robot executed the approach, descent, gripper-close, and upward-motion sequence without actually capturing the object.
 
-- **Observations & Implementation**:
-  1. **60° Camera Pitch Angle Correction**: The real-world smartphone video was recorded from a chest mount tilted downward at approximately $60^\circ$, whereas our initial script assumed a $45^\circ$ angle. Correcting this angle in `src/retargeting/cotracker_to_panda.py` un-projected camera-plane displacement into true horizontal tabletop transit:
+Quantitative Improvement:
+ The geometric calibration produced a major reduction in approach error. In Iteration 1, the minimum physical EEF-to-tumbler distance was 13.97 cm. After applying the 60° camera calibration and reducing the position gain, the minimum distance decreased to 3.80 cm at frame 98:
 
-$$
-v_{\text{forward}} = \frac{v_{\text{reach}}}{\sin(60^\circ)}, \quad v_{\text{vertical}} = \frac{v_{\text{vertical}}}{\cos(60^\circ)}
-$$
+dmin⁡:13.97 cm→3.80 cmd_{\min}: 13.97\text{ cm} \rightarrow 3.80\text{ cm}dmin​:13.97 cm→3.80 cm
 
-$$
-\begin{bmatrix} \Delta X_{\text{robot}} \\ \Delta Y_{\text{robot}} \\ \Delta Z_{\text{robot}} \end{bmatrix} = \mathbf{S} \begin{bmatrix} v_{\text{forward}} \\ -v_{\text{lateral}} \\ v_{\text{vertical}} \end{bmatrix}, \quad \mathbf{S} = \text{diag}(8.0, 8.0, 8.0)
-$$
+corresponding to approximately a 72.8% reduction in closest-approach distance.
 
-  2. **Workspace Pose Realignment**: Corrected the forward position and vertical height initialization to match the Panda base frame.
-  3. **Tightened Glass ROI**: We shrank the glass query box so that it samples points strictly on the cylindrical metallic body, excluding the table surface below:
-     ```python
-     # Tight glass ROI positioned strictly on cylindrical metal body (avoiding table below):
-     glass_roi = (int(W * 0.42), int(H * 0.38), int(W * 0.56), int(H * 0.58))
-     ```
-     This guaranteed that tracked points resided on the moving tumbler, preventing static table points from corrupting the centroid.
-- **Outcome & Next Barrier**: As shown in `Vid_0_ct_comparison copy 2.mp4`, the robot arm now moves forward and physically reaches the glass! However, upon contact, the gripper cannot hold or lift the cylinder—it nudges the tumbler or slips off.
+The excessive X excursion was also greatly reduced:
 
+∣ΔX∣max⁡:34.95 cm→6.65 cm.|\Delta X|_{\max}: 34.95\text{ cm} \rightarrow 6.65\text{ cm}.∣ΔX∣max​:34.95 cm→6.65 cm.
+
+This confirms that the Iteration 1 failure was strongly influenced by incorrect camera-to-robot motion scaling.
+
+Remaining Physical Failure:
+ Despite reaching much closer to the tumbler, MuJoCo reported no gripper-tumbler contact, and RoboSuite's _check_grasp returned no grasp. The tumbler remained essentially on the tabletop, with no positive lift. Its initial height was 0.857500 m, while the highest recorded post-step value was 0.849540 m; therefore the required 3 cm lift threshold was not reached.
+
+Visual Observation:
+ The screenshot provides useful qualitative context for the quantitative result. The tumbler is positioned immediately below the Panda gripper assembly, showing that the gross reach direction has improved substantially compared with Iteration 1. However, the cylinder is not enclosed between the two finger pads. The approach geometry therefore still does not produce the bilateral finger contact required for a secure parallel-jaw grasp.
+
+Engineering Deduction:
+ Iteration 2 demonstrates that camera calibration solved most of the gross reaching error but did not solve grasp geometry. The robot can now reach the vicinity of the tumbler, but reaching an object's neighborhood is not equivalent to establishing a grasp. The next calibration therefore needs to focus on the relative geometry between the Panda gripper and cylinder, particularly EEF height, approach offset, and gripper/finger orientation, before friction can meaningfully improve the grasp.
 ---
 
 ### 3.3 Iteration 3: Material Physics Calibration — Hollow Steel Density & Contact Friction
@@ -356,3 +377,15 @@ First establish the failure condition.
 You want to answer:
 
 What happens if we directly use the raw tracked image motion without the later camera, physics, orientation, and co-motion improvements?
+
+camera_tilt_deg = 0.0
+
+
+
+# Short overview table:
+
+Short summary for your progression table
+
+You can also replace the old Iteration 1 row with:
+
+Iteration	Key Physical Hurdle	Engineering Deduction	Simulation OutcomeIteration 1: Raw CoTracker3	Large approach misalignment despite substantial EEF motion	0° camera model and uncalibrated tumbler ROI caused image-space motion to map incorrectly into the Panda workspace	34.95 cm X excursion but 13.97 cm minimum object distance; no contact, no grasp, no lift
