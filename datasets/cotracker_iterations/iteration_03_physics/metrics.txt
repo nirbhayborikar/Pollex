@@ -1,0 +1,85 @@
+REPLAY METRICS
+====================================================================
+
+INPUT / REPLAY
+--------------------------------------------------------------------
+Actions file:              datasets/cotracker_iterations/iteration_02_camera_roi/cup_lifting_01_ct_actions.npz
+Task:                      GlassLift
+Action steps:              340
+Comparison FPS:            30.00
+
+ROBOT END-EFFECTOR
+--------------------------------------------------------------------
+Initial EEF XYZ [m]:       [-1.027683e-01  8.267430e-18  1.011044e+00]
+Final EEF XYZ [m]:         [-1.683388e-01 -1.627105e-04  1.077423e+00]
+Maximum |dX|:              6.56 cm
+Maximum |dY|:              0.05 cm
+Maximum |dZ|:              16.24 cm
+Signed dX range:           -6.56 to +3.68 cm
+Signed dY range:           -0.05 to +0.00 cm
+Signed dZ range:           -16.24 to +6.64 cm
+
+TUMBLER / OBJECT
+--------------------------------------------------------------------
+Tumbler body:              body:glass_main
+Position source:           MuJoCo body_xpos
+Initial tumbler XYZ [m]:   [-0.035   0.      0.8575]
+Initial tumbler Z:         0.857500 m
+Maximum tumbler Z:         0.849760 m
+Maximum tumbler lift:      -0.77 cm
+Minimum EEF-object dist:   3.80 cm
+Closest approach frame:    98
+
+CLOSEST APPROACH GEOMETRY
+--------------------------------------------------------------------
+
+EEF closest frame:           98
+EEF XYZ:                     [-7.0301e-02 -7.9319e-05  8.5753e-01]
+Tumbler XYZ:                 [-3.3815e-02 -4.4883e-05  8.4707e-01]
+EEF-object dX:               +3.65 cm
+EEF-object dY:               +0.00 cm
+EEF-object dZ:               -1.05 cm
+Horizontal XY offset:        3.65 cm
+Vertical offset (dZ):        -1.05 cm
+
+Left finger pad geom:        gripper0_finger1_pad_collision
+Left finger closest frame:   154
+Left finger XYZ:             [-0.0711 -0.0057  0.8533]
+Tumbler XYZ at left frame:   [-2.7987e-02 -1.7596e-04  8.4964e-01]
+Min left pad->center dist:   4.36 cm
+Left horiz-to-axis dist:     4.35 cm
+Left vertical offset:        +0.37 cm
+Left surface clearance:      1.25 cm
+
+Right finger pad geom:       gripper0_finger2_pad_collision
+Right finger closest frame:  154
+Right finger XYZ:            [-0.0711  0.0053  0.8533]
+Tumbler XYZ at right frame:  [-2.7987e-02 -1.7596e-04  8.4964e-01]
+Min right pad->center dist:  4.36 cm
+Right horiz-to-axis dist:    4.35 cm
+Right vertical offset:       +0.37 cm
+Right surface clearance:     1.25 cm
+
+Glass diameter:              6.0 cm
+Pad separation @ EEF frame:  8.70 cm
+Pad separation @ left frame: 1.10 cm
+Pad separation @ right frame:1.10 cm
+Min pad separation episode:  0.80 cm
+  at frame:                  176
+
+PHYSICAL OUTCOME
+--------------------------------------------------------------------
+Contact signal source:     MuJoCo contact pairs
+Contact occurred:          NO
+First contact frame:       N/A
+
+Grasp signal source:       RoboSuite _check_grasp
+Grasp occurred:            NO
+First grasp frame:         N/A
+
+Lift threshold:            3.0 cm
+Lift success:              NO
+
+RESULT
+--------------------------------------------------------------------
+Measured result: physical lift threshold was not reached.

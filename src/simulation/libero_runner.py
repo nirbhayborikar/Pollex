@@ -55,6 +55,14 @@ class PandaSimEnvironment:
         self._glass_body_name = None
         self._glass_geom_ids = set()
         self._gripper_contact_geom_ids = set()
+        self._left_pad_geom_name = None
+        self._right_pad_geom_name = None
+        self._left_pad_geom_id = None
+        self._right_pad_geom_id = None
+        self._glass_geom_id = None
+        self._glass_radius = 0.030
+        self._left_pad_half_size = None
+        self._right_pad_half_size = None
         self._physics_available = False
 
         try:
@@ -125,18 +133,41 @@ class PandaSimEnvironment:
                 if name in gripper_collision_names:
                     self._gripper_contact_geom_ids.add(i)
 
+            # Finger pad geoms for grasp diagnostic (verified names from MuJoCo model dump)
+            self._left_pad_geom_name = "gripper0_finger1_pad_collision"
+            self._right_pad_geom_name = "gripper0_finger2_pad_collision"
+            self._left_pad_geom_id = model.geom_name2id(self._left_pad_geom_name)
+            self._right_pad_geom_id = model.geom_name2id(self._right_pad_geom_name)
+
+            # Glass collision geom size (cylinder: [radius, half_height])
+            self._glass_geom_id = sorted(self._glass_geom_ids)[0]
+            self._glass_radius = float(model.geom_size[self._glass_geom_id][0])
+
+            # Pad box half-extents for surface clearance calculation
+            self._left_pad_half_size = model.geom_size[self._left_pad_geom_id].copy()
+            self._right_pad_half_size = model.geom_size[self._right_pad_geom_id].copy()
+
             self._physics_available = True
 
             initial_pos = self.env.sim.data.body_xpos[self._glass_body_id].copy()
             print(f"[PHYSICS] Glass body name: {self._glass_body_name}")
             print(f"[PHYSICS] Glass body ID: {self._glass_body_id}")
-            print(f"[PHYSICS] Glass collision geom IDs: {sorted(self._glass_geom_ids)}")
+            print(f"[PHYSICS] Glass collision geom: {model.geom_id2name(self._glass_geom_id)} (id={self._glass_geom_id})")
+            print(f"[PHYSICS] Glass radius: {self._glass_radius:.4f} m")
+            print(f"[PHYSICS] Left pad geom: {self._left_pad_geom_name} (id={self._left_pad_geom_id}) half_size={self._left_pad_half_size}")
+            print(f"[PHYSICS] Right pad geom: {self._right_pad_geom_name} (id={self._right_pad_geom_id}) half_size={self._right_pad_half_size}")
             print(f"[PHYSICS] Gripper collision geom IDs: {sorted(self._gripper_contact_geom_ids)}")
             print(f"[PHYSICS] Initial tumbler XYZ: {initial_pos}")
             print(f"[PHYSICS] Tumbler position source: MuJoCo body_xpos")
 
         except Exception as e:
             print(f"[PHYSICS] Failed to initialize physics IDs: {e}")
+
+    def _get_geom_xyz(self, geom_id: int) -> Optional[np.ndarray]:
+        pos = self.env.sim.data.geom_xpos[geom_id].copy()
+        if pos.shape == (3,) and np.all(np.isfinite(pos)):
+            return pos
+        return None
 
     def _get_tumbler_pos(self) -> Optional[np.ndarray]:
         if not self._physics_available:
@@ -191,6 +222,12 @@ class PandaSimEnvironment:
         tumbler_contact = self._get_tumbler_contact()
         tumbler_grasped = self._get_tumbler_grasped()
 
+        left_pad_pos = None
+        right_pad_pos = None
+        if self._physics_available:
+            left_pad_pos = self._get_geom_xyz(self._left_pad_geom_id)
+            right_pad_pos = self._get_geom_xyz(self._right_pad_geom_id)
+
         return {
             "rgb": rgb,
             "robot_eef_pos": obs.get("robot0_eef_pos", None),
@@ -201,6 +238,11 @@ class PandaSimEnvironment:
             "tumbler_pos_source": f"body:{self._glass_body_name}" if self._physics_available else None,
             "tumbler_contact": tumbler_contact,
             "tumbler_grasped": tumbler_grasped,
+            "left_finger_pad_pos": left_pad_pos,
+            "right_finger_pad_pos": right_pad_pos,
+            "left_finger_pad_geom": self._left_pad_geom_name,
+            "right_finger_pad_geom": self._right_pad_geom_name,
+            "glass_radius": self._glass_radius,
             "raw_obs": obs,
         }
 

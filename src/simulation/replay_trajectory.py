@@ -128,12 +128,19 @@ def replay_actions_and_record(
     else:
         print("[PHYSICS] ERROR: tumbler_pos is None after reset")
 
+    # Grasp diagnostic: finger pad geometry info
+    left_pad_geom_name = obs.get("left_finger_pad_geom")
+    right_pad_geom_name = obs.get("right_finger_pad_geom")
+    glass_radius = float(obs.get("glass_radius", 0.030))
+
     # Storage arrays
     sim_frames = []
     recorded_robot_states = []
     recorded_robot_state_frames = []
     recorded_tumbler_positions = []
     recorded_tumbler_frames = []
+    recorded_left_pad_positions = []
+    recorded_right_pad_positions = []
     recorded_contacts = []
     recorded_grasps = []
     recorded_rewards = []
@@ -173,6 +180,18 @@ def replay_actions_and_record(
         else:
             print(f"[PHYSICS] ERROR: tumbler_pos missing at frame {t}")
 
+        # 8b. RECORD FINGER PAD POSITIONS (from MuJoCo geom_xpos)
+        left_pad = obs.get("left_finger_pad_pos")
+        right_pad = obs.get("right_finger_pad_pos")
+        recorded_left_pad_positions.append(
+            np.asarray(left_pad, dtype=np.float32).copy() if left_pad is not None
+            else np.full(3, np.nan, dtype=np.float32)
+        )
+        recorded_right_pad_positions.append(
+            np.asarray(right_pad, dtype=np.float32).copy() if right_pad is not None
+            else np.full(3, np.nan, dtype=np.float32)
+        )
+
         # 9. RECORD PHYSICAL CONTACT (from MuJoCo contact pairs)
         contact_value = obs.get("tumbler_contact")
         recorded_contacts.append(float(contact_value) if contact_value is not None else np.nan)
@@ -205,6 +224,8 @@ def replay_actions_and_record(
     tumbler_position_frames = np.asarray(recorded_tumbler_frames, dtype=np.int32)
     contact_flags = np.asarray(recorded_contacts, dtype=np.float32)
     grasp_flags = np.asarray(recorded_grasps, dtype=np.float32)
+    left_pad_positions = np.asarray(recorded_left_pad_positions, dtype=np.float32)
+    right_pad_positions = np.asarray(recorded_right_pad_positions, dtype=np.float32)
 
     # 14. CALCULATE ACTUAL PANDA EEF MOTION
     final_eef_pos = None
@@ -267,6 +288,81 @@ def replay_actions_and_record(
         if len(grasp_indices) > 0:
             first_grasp_frame = int(grasp_indices[0])
 
+    # 17b. GRASP GEOMETRY DIAGNOSTIC — three independent closest frames
+    diag = {"available": False}
+
+    if n_paired > 0 and np.all(np.isfinite(left_pad_positions[:n_paired])) and np.all(np.isfinite(right_pad_positions[:n_paired])):
+        diag["available"] = True
+        diag["left_pad_geom_name"] = left_pad_geom_name
+        diag["right_pad_geom_name"] = right_pad_geom_name
+        diag["glass_radius"] = glass_radius
+
+        # EEF -> tumbler per-frame offsets
+        eef_obj_delta = tumbler_positions[:n_paired] - eef_positions[:n_paired]
+        diag["eef_closest_frame"] = closest_approach_frame
+        diag["eef_xyz"] = eef_positions[closest_approach_frame]
+        diag["tumbler_xyz_at_eef"] = tumbler_positions[closest_approach_frame]
+        diag["eef_dx"] = float(eef_obj_delta[closest_approach_frame, 0])
+        diag["eef_dy"] = float(eef_obj_delta[closest_approach_frame, 1])
+        diag["eef_dz"] = float(eef_obj_delta[closest_approach_frame, 2])
+        diag["eef_horizontal_xy"] = float(np.linalg.norm(eef_obj_delta[closest_approach_frame, :2]))
+        diag["eef_vertical_dz"] = float(eef_obj_delta[closest_approach_frame, 2])
+
+        # Left pad -> tumbler center distances (3D) and horizontal-to-axis
+        left_pad_dists_3d = np.linalg.norm(left_pad_positions[:n_paired] - tumbler_positions[:n_paired], axis=1)
+        diag["left_closest_frame"] = int(np.argmin(left_pad_dists_3d))
+        diag["min_left_pad_dist"] = float(left_pad_dists_3d[diag["left_closest_frame"]])
+        lf = diag["left_closest_frame"]
+        diag["left_pad_xyz"] = left_pad_positions[lf]
+        diag["tumbler_xyz_at_left"] = tumbler_positions[lf]
+        diag["left_horizontal_to_axis"] = float(np.linalg.norm(
+            left_pad_positions[lf, :2] - tumbler_positions[lf, :2]))
+        diag["left_vertical_offset"] = float(left_pad_positions[lf, 2] - tumbler_positions[lf, 2])
+
+        # Right pad -> tumbler center distances
+        right_pad_dists_3d = np.linalg.norm(right_pad_positions[:n_paired] - tumbler_positions[:n_paired], axis=1)
+        diag["right_closest_frame"] = int(np.argmin(right_pad_dists_3d))
+        diag["min_right_pad_dist"] = float(right_pad_dists_3d[diag["right_closest_frame"]])
+        rf = diag["right_closest_frame"]
+        diag["right_pad_xyz"] = right_pad_positions[rf]
+        diag["tumbler_xyz_at_right"] = tumbler_positions[rf]
+        diag["right_horizontal_to_axis"] = float(np.linalg.norm(
+            right_pad_positions[rf, :2] - tumbler_positions[rf, :2]))
+        diag["right_vertical_offset"] = float(right_pad_positions[rf, 2] - tumbler_positions[rf, 2])
+
+        # Pad-pad separation at EEF closest frame
+        diag["pad_separation_at_eef"] = float(np.linalg.norm(
+            left_pad_positions[closest_approach_frame] - right_pad_positions[closest_approach_frame]))
+
+        # Pad-pad separation at each pad's own closest frame
+        diag["pad_separation_at_left"] = float(np.linalg.norm(
+            left_pad_positions[lf] - right_pad_positions[lf]))
+        diag["pad_separation_at_right"] = float(np.linalg.norm(
+            left_pad_positions[rf] - right_pad_positions[rf]))
+
+        # Minimum pad separation across entire episode
+        all_seps = np.linalg.norm(left_pad_positions[:n_paired] - right_pad_positions[:n_paired], axis=1)
+        diag["min_pad_separation_episode"] = float(np.min(all_seps))
+        diag["min_pad_separation_frame"] = int(np.argmin(all_seps))
+
+        # Surface clearance estimates (pad half-thickness along closing axis ~1mm from XML)
+        pad_half_thickness = 0.001
+        diag["left_surface_clearance"] = diag["left_horizontal_to_axis"] - glass_radius - pad_half_thickness
+        diag["right_surface_clearance"] = diag["right_horizontal_to_axis"] - glass_radius - pad_half_thickness
+
+        # Glass dimensions for context
+        diag["glass_diameter"] = glass_radius * 2
+
+        print(f"\n[DIAG] EEF closest frame: {diag['eef_closest_frame']}  dist={diag['min_pad_separation_episode']:.4f}")
+        print(f"[DIAG] Left pad closest frame: {diag['left_closest_frame']}  3D dist={diag['min_left_pad_dist']*100:.2f} cm  horiz-to-axis={diag['left_horizontal_to_axis']*100:.2f} cm")
+        print(f"[DIAG] Right pad closest frame: {diag['right_closest_frame']}  3D dist={diag['min_right_pad_dist']*100:.2f} cm  horiz-to-axis={diag['right_horizontal_to_axis']*100:.2f} cm")
+        print(f"[DIAG] Pad separation @ EEF closest: {diag['pad_separation_at_eef']*100:.2f} cm  (glass diameter: {diag['glass_diameter']*100:.1f} cm)")
+        print(f"[DIAG] Pad separation @ left closest: {diag['pad_separation_at_left']*100:.2f} cm")
+        print(f"[DIAG] Pad separation @ right closest: {diag['pad_separation_at_right']*100:.2f} cm")
+        print(f"[DIAG] Min pad separation in episode: {diag['min_pad_separation_episode']*100:.2f} cm at frame {diag['min_pad_separation_frame']}")
+        print(f"[DIAG] Left surface clearance: {diag['left_surface_clearance']*100:.2f} cm")
+        print(f"[DIAG] Right surface clearance: {diag['right_surface_clearance']*100:.2f} cm")
+
     # 18. SAVE METRICS.TXT
     out_vid_path = Path(output_video_path)
     out_vid_path.parent.mkdir(parents=True, exist_ok=True)
@@ -279,7 +375,7 @@ def replay_actions_and_record(
         return str(frame) if frame >= 0 else "N/A"
 
     with open(metrics_path, "w", encoding="utf-8") as f:
-        f.write("ITERATION 1: RAW COTRACKER3 BASELINE\n")
+        f.write("REPLAY METRICS\n")
         f.write("=" * 68 + "\n\n")
 
         f.write("INPUT / REPLAY\n")
@@ -319,6 +415,46 @@ def replay_actions_and_record(
             f.write("Tumbler position:          UNAVAILABLE\n")
             f.write("Maximum tumbler lift:      UNAVAILABLE\n")
         f.write("\n")
+
+        # GRASP GEOMETRY DIAGNOSTIC
+        if diag["available"]:
+            f.write("CLOSEST APPROACH GEOMETRY\n")
+            f.write("-" * 68 + "\n\n")
+
+            ef = diag["eef_closest_frame"]
+            f.write(f"EEF closest frame:           {ef}\n")
+            f.write(f"EEF XYZ:                     {np.array2string(diag['eef_xyz'], precision=4)}\n")
+            f.write(f"Tumbler XYZ:                 {np.array2string(diag['tumbler_xyz_at_eef'], precision=4)}\n")
+            f.write(f"EEF-object dX:               {diag['eef_dx']*100:+.2f} cm\n")
+            f.write(f"EEF-object dY:               {diag['eef_dy']*100:+.2f} cm\n")
+            f.write(f"EEF-object dZ:               {diag['eef_dz']*100:+.2f} cm\n")
+            f.write(f"Horizontal XY offset:        {diag['eef_horizontal_xy']*100:.2f} cm\n")
+            f.write(f"Vertical offset (dZ):        {diag['eef_vertical_dz']*100:+.2f} cm\n\n")
+
+            f.write(f"Left finger pad geom:        {diag['left_pad_geom_name']}\n")
+            f.write(f"Left finger closest frame:   {diag['left_closest_frame']}\n")
+            f.write(f"Left finger XYZ:             {np.array2string(diag['left_pad_xyz'], precision=4)}\n")
+            f.write(f"Tumbler XYZ at left frame:   {np.array2string(diag['tumbler_xyz_at_left'], precision=4)}\n")
+            f.write(f"Min left pad->center dist:   {diag['min_left_pad_dist']*100:.2f} cm\n")
+            f.write(f"Left horiz-to-axis dist:     {diag['left_horizontal_to_axis']*100:.2f} cm\n")
+            f.write(f"Left vertical offset:        {diag['left_vertical_offset']*100:+.2f} cm\n")
+            f.write(f"Left surface clearance:      {diag['left_surface_clearance']*100:.2f} cm\n\n")
+
+            f.write(f"Right finger pad geom:       {diag['right_pad_geom_name']}\n")
+            f.write(f"Right finger closest frame:  {diag['right_closest_frame']}\n")
+            f.write(f"Right finger XYZ:            {np.array2string(diag['right_pad_xyz'], precision=4)}\n")
+            f.write(f"Tumbler XYZ at right frame:  {np.array2string(diag['tumbler_xyz_at_right'], precision=4)}\n")
+            f.write(f"Min right pad->center dist:  {diag['min_right_pad_dist']*100:.2f} cm\n")
+            f.write(f"Right horiz-to-axis dist:    {diag['right_horizontal_to_axis']*100:.2f} cm\n")
+            f.write(f"Right vertical offset:       {diag['right_vertical_offset']*100:+.2f} cm\n")
+            f.write(f"Right surface clearance:     {diag['right_surface_clearance']*100:.2f} cm\n\n")
+
+            f.write(f"Glass diameter:              {diag['glass_diameter']*100:.1f} cm\n")
+            f.write(f"Pad separation @ EEF frame:  {diag['pad_separation_at_eef']*100:.2f} cm\n")
+            f.write(f"Pad separation @ left frame: {diag['pad_separation_at_left']*100:.2f} cm\n")
+            f.write(f"Pad separation @ right frame:{diag['pad_separation_at_right']*100:.2f} cm\n")
+            f.write(f"Min pad separation episode:  {diag['min_pad_separation_episode']*100:.2f} cm\n")
+            f.write(f"  at frame:                  {diag['min_pad_separation_frame']}\n\n")
 
         f.write("PHYSICAL OUTCOME\n")
         f.write("-" * 68 + "\n")
@@ -363,6 +499,8 @@ def replay_actions_and_record(
             initial_tumbler_pos=initial_tumbler_pos if initial_tumbler_pos is not None else np.full(3, np.nan, dtype=np.float32),
             max_tumbler_lift=np.float32(maximum_tumbler_lift),
             min_eef_tumbler_distance=np.float32(min_eef_tumbler_distance),
+            left_pad_positions=left_pad_positions,
+            right_pad_positions=right_pad_positions,
             lift_success=np.int8(-1 if lift_success is None else int(lift_success)),
             replay_fps=np.float32(replay_fps),
         )

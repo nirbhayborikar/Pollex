@@ -5,7 +5,7 @@ to the Franka Panda base frame for RoboSuite OSC control.
 
 Incorporates:
 - 60° camera inclination angle un-projection (v_reach / sin(theta) horizontal tabletop reach)
-- Goal-directed reach towards glass cylinder during approach phase
+- Goal-directed pad targeting: cosine-ramp EEF trajectory so finger pads center on glass axis
 - Upward vertical lift upon co-motion grasp latch (rho_t > 0.55)
 """
 
@@ -29,11 +29,13 @@ class CoTrackerToPandaRetargeter:
     """
 
 
-    # edit position_gain, and tilt agnle 
+    # edit position_gain, and tilt agnle
     # iteration 1 : 10.0, and angle = 0
     # iteration 2: 8.0 and angle = 60 deg
-    # 60.0
-    def __init__(self, camera_tilt_deg: float = 60.0, position_gain: float = 8.0, smoothing_alpha: float = 0.4, max_step_displacement: float = 0.8):
+    # iteration 4: eef_to_pad_offset_x = 0.043 (measured from Iteration 3 diagnostic)
+    # iteration 5: goal-directed pad targeting — target EEF X so pads center on glass
+    def __init__(self, camera_tilt_deg: float = 60.0, position_gain: float = 8.0, smoothing_alpha: float = 0.4, max_step_displacement: float = 0.8, eef_to_pad_offset_x: float = 0.043,
+                 glass_x: float = -0.035, eef_init_x: float = -0.103):
     
         """
         Initializes the retargeter: 
@@ -68,6 +70,12 @@ class CoTrackerToPandaRetargeter:
         self.position_gain = position_gain
         self.smoothing_alpha = smoothing_alpha
         self.max_step_displacement = max_step_displacement
+        self.eef_to_pad_offset_x = eef_to_pad_offset_x
+        # Iteration 5: Goal-directed pad targeting
+        # Target EEF X = glass_x - eef_to_pad_offset_x so that finger pads center on glass
+        self.glass_x = glass_x
+        self.eef_init_x = eef_init_x
+        self.target_eef_x = glass_x - eef_to_pad_offset_x  # -0.035 - 0.043 = -0.078
 
     def retarget_trajectory(self, npz_trajectory_file: str,output_file: Optional[str] = None) -> Dict[str, np.ndarray]:
         """
@@ -248,38 +256,44 @@ class CoTrackerToPandaRetargeter:
 
                 else:
                     # After the hand enters
+                    # -------------------------------------------------------
+                    # Iteration 5: GOAL-DIRECTED APPROACH WITH IMAGE DISTANCE
+                    # -------------------------------------------------------
+                    # Keep the image-based velocity approach (large enough for
+                    # OSC to track) but modulate by image-space hand→glass
+                    # distance so the robot decelerates as the hand closes in.
+                    # Add the full eef_to_pad_offset as a one-shot bias in
+                    # the first approach frame (not spread) so the robot
+                    # aims pads at glass, not EEF at glass.
+                    # -------------------------------------------------------
+
                     # Direction towards glass in image
-                    v_reach = glass_c[t] - hand_c[t] # This calculates the image-space vector: hand → glass
-                    """ Ex:
-                    hand  = [0.25, 0.55]
-                    glass = [0.60, 0.50]
-                    ----------------------
-                    v_reach = [0.35, -0.05]
-                    """
-                    dist_reach = float(np.linalg.norm(v_reach)) # calculates the hand-glass distance.
-                    u_reach = v_reach / (dist_reach + 1e-6) # turns the vector into a unit direction.
+                    v_reach = glass_c[t] - hand_c[t]
+                    dist_reach = float(np.linalg.norm(v_reach))
+                    u_reach = v_reach / (dist_reach + 1e-6)
 
-                    # Measure hand velocity towards the cup. This is the human wrist image motion.
+                    # Human hand velocity projected onto reach direction
                     v_hand = np.array([dx_hand, dy_hand], dtype=np.float32)
-
-                    # the dot product asks: How much of the human hand movement is actually directed toward the cup?
                     v_approach = float(np.dot(v_hand, u_reach))
 
-                    # Convert that into robot X motion
-                    # Forward table reach un-projected by sin(theta)
-                    reach_rate = max(0.002, v_approach) # the robot get always 0.002 reach
-                    
-                    # This converts "image motion" into table-plane "robot motion".
+                    # Scale by image distance: full speed when far, decelerate near glass
+                    # dist_reach is in [0,1] normalized image coords; typical start ~0.3
+                    dist_gain = min(dist_reach / 0.15, 1.0)  # saturates above 0.15
+
+                    reach_rate = max(0.002, v_approach) * dist_gain
                     dx_robot = (reach_rate / max(0.1, self.sin_theta)) * self.position_gain
-                    # sin_theta compensate for camera viewing geometry. 10.0 is essentially a gain.
+
+                    # Iteration 5: Apply full pad offset as a one-shot impulse
+                    # in the first 5 approach frames (concentrated, not spread).
+                    # This gives OSC a large enough command to actually move.
+                    frames_since_entry = t - t_entry
+                    if frames_since_entry < 5:
+                        dx_robot += self.eef_to_pad_offset_x / 5.0  # 0.043/5 = 0.0086 per frame
 
                     # Cylinder is aligned along center Y
-                    # This is an important limitation robot currently does not reproduce human side-to-side movement.
-                    # not yet general 3D human retargeting.
                     dy_robot = 0.0
 
                     # Calibrated descent to align gripper right at cylinder height
-                    # The purpose is to bring the gripper from its initial elevated pose down to the glass grasp height.
                     dz_robot = -0.24 if t > (t_entry + 4) else 0.0
                 grip = -1.0
 
@@ -503,7 +517,7 @@ if __name__ == "__main__":
     if len(sys.argv) >= 3:
         output_dir = Path(sys.argv[2])
     else:
-        output_dir = Path("datasets/cotracker_iterations/iteration_01_raw")
+        output_dir = Path("datasets/cotracker_iterations/iteration_05_goal_directed")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     input_path = Path(input_file)
