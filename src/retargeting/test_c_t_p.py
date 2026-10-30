@@ -174,6 +174,7 @@ class CoTrackerToPandaRetargeter:
                 dz_robot = 0.15
                 grip = -1.0
 
+            # Convert into XYZ action, Cartesian translation:
             raw_delta = np.array([dx_robot, dy_robot, dz_robot], dtype=np.float32)
 
             # EMA smoothing to eliminate jitter

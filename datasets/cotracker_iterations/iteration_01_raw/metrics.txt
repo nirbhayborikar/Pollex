@@ -1,0 +1,40 @@
+ITERATION 1: RAW COTRACKER3 BASELINE
+====================================================================
+
+INPUT / REPLAY
+--------------------------------------------------------------------
+Actions file:              datasets/cotracker_iterations/iteration_01_raw/cup_lifting_01_ct_actions.npz
+Task:                      GlassLift
+Action steps:              340
+Comparison FPS:            30.00
+
+ROBOT END-EFFECTOR
+--------------------------------------------------------------------
+Initial EEF XYZ [m]:       [-1.027683e-01  8.267430e-18  1.011044e+00]
+Final EEF XYZ [m]:         [0.183343 0.001936 1.075035]
+Maximum |dX|:             34.95 cm
+Maximum |dY|:             0.27 cm
+Maximum |dZ|:             20.17 cm
+Signed dX range:           +0.00 to +34.95 cm
+Signed dY range:           -0.00 to +0.27 cm
+Signed dZ range:           -20.17 to +6.40 cm
+
+TUMBLER / OBJECT
+--------------------------------------------------------------------
+Tumbler position:           UNAVAILABLE
+Maximum tumbler lift:       UNAVAILABLE
+
+PHYSICAL OUTCOME
+--------------------------------------------------------------------
+Contact signal source:      UNAVAILABLE
+Contact occurred:           UNAVAILABLE
+Grasp signal source:        UNAVAILABLE
+Grasp occurred:             UNAVAILABLE
+Lift threshold:             3.0 cm
+Lift success:               UNAVAILABLE
+
+RESULT
+--------------------------------------------------------------------
+Measured result: lift could not be evaluated because the simulator did not expose the tumbler XYZ position.
+
+No qualitative conclusion such as 'arm stationary' is hard-coded. Interpret Iteration 1 from the measured EEF, object, contact, grasp, and lift values above.

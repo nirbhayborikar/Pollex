@@ -32,28 +32,29 @@ class CoTrackerToPandaRetargeter:
     # 
     # 60.0
     def __init__(self, camera_tilt_deg: float = 0.0, position_gain: float = 8.0, smoothing_alpha: float = 0.4, max_step_displacement: float = 0.8):
-    """
-    Initializes the retargeter: 
-        1. camera_tilt_deg:Tilt angle of the phone/camera relative to the robot/world frame. 
-            - Ex:  0 degrees  -> camera considered level
-                    30 degrees -> camera pitched by 30 degrees
-            - This is useful because movement observed in camera coordinates
-            may not directly correspond to Panda X/Y/Z coordinates
-        
-        2. position_gain: Multiplier applied to the human-hand movement.
-            - Ex: raw hand delta = 0.01, position_gain = 8
-                scaled delta = 0.01 * 8 = 0.08
-            - Increasing this makes the Panda react more strongly to the same amount of human-hand movement.
     
-        3. smoothing_alpha: Controls temporal smoothing of the movement. (Alpha depended, how much new value velocity to take)
-            Usually used like: smoothed = alpha * new_delta + (1 - alpha) * previous_smoothed_delta
-           - Example with alpha = 0.4:
-                - 40% current measurement
-                - 60% previous "smoothed value"
-           - Smaller alpha: smoother motion, but slower response.
-           - Larger alpha: faster response, but more tracking noise/jitter.
-    """
+        """
+        Initializes the retargeter: 
+            1. camera_tilt_deg:Tilt angle of the phone/camera relative to the robot/world frame. 
+                - Ex:  0 degrees  -> camera considered level
+                        30 degrees -> camera pitched by 30 degrees
+                - This is useful because movement observed in camera coordinates
+                may not directly correspond to Panda X/Y/Z coordinates
+            
+            2. position_gain: Multiplier applied to the human-hand movement.
+                - Ex: raw hand delta = 0.01, position_gain = 8
+                    scaled delta = 0.01 * 8 = 0.08
+                - Increasing this makes the Panda react more strongly to the same amount of human-hand movement.
         
+            3. smoothing_alpha: Controls temporal smoothing of the movement. (Alpha depended, how much new value velocity to take)
+                Usually used like: smoothed = alpha * new_delta + (1 - alpha) * previous_smoothed_delta
+            - Example with alpha = 0.4:
+                    - 40% current measurement
+                    - 60% previous "smoothed value"
+            - Smaller alpha: smoother motion, but slower response.
+            - Larger alpha: faster response, but more tracking noise/jitter.
+        """
+            
         
         self.camera_tilt_deg = camera_tilt_deg # Store the camera tilt angle in degrees.
         self.camera_tilt_rad = np.radians(camera_tilt_deg) # ex: 30 degrees -> 0.5236 radians
@@ -118,15 +119,20 @@ class CoTrackerToPandaRetargeter:
         Actual robot/object positions are recorded later 
         by replay_trajectory.py after MuJoCo executes the action.
         """
+        retarget_log = [] # python list for every frame
 
-        retarget_log = []
 
-
-        # Track when grasp begins
+        # ============================================================
+        # FIND WHEN THE GRASP STARTS (+1)
+        # ============================================================
         first_grasp_idx = np.where(gripper_states > 0)[0]
+
+        # t_grasp = first frame where grasp starts
+        # Ex: first_grasp_idx = [84, 85, 86, 87, ...], then: t_grasp = 84
         t_grasp = int(first_grasp_idx[0]) if len(first_grasp_idx) > 0 else T
 
         # Identify hand entry frame
+        # First check whether your .npz file already contains "t_hand".
         if "t_hand" in data and int(data["t_hand"]) > 0:
             t_entry = int(data["t_hand"])
         else:
@@ -137,18 +143,60 @@ class CoTrackerToPandaRetargeter:
                     break
         reach_span = max(1, t_grasp - t_entry)
 
-        # Extract glass tracks vertical profile (Pick -> Lift -> Return to Table -> Release)
+        """ 
+            This block converts the observed 2D cup/glass motion in the video into a simplified 7-DoF Franka/Panda action sequence. 
+            The main idea is:
+            wait → reach cup → close gripper → lift/return using cup motion → open gripper → retract
+        """
+        # Extract glass vertical profile (Pick -> Lift -> Return to Table -> Release)
         if has_tracks:
-            glass_y = data["glass_tracks"].mean(axis=1)[:, 1]
-            y_rest = float(np.median(glass_y[:t_grasp]))
+            glass_y = data["glass_tracks"].mean(axis=1)[:, 1] # average all glass tracking point: (T, 2) then [:, 1]-> selects only the image Y coordinate.
+            """ 
+            top of image
+            y = 0
+            ↑ glass lifted
+            |
+            |
+            y increases
+            ↓
+            bottom of image
+
+            so when we lift the glass upward, normally its image y value decreases.
+            """
+
+            # calculate the median vertical position of the glass before t_grasp. 
+            # Before grasping, the glass is assumed to be sitting on the table.
+
+            """ Example:
+            Frame       glass_y
+            0           370
+            1           369
+            2           371
+            3           370
+            ...
+            grasp       370
+            """
+            y_rest = float(np.median(glass_y[:t_grasp])) # median is a good choice because it's less sensitive to a few bad CoTracker points.
+            # y_rest will be constant now
+
+            # calculate how much the glass has been lifted
+            """ glass_y will be change we subtract it from y_rest and see the difference
+                Large lift px means the glass appears higher in the image. """
             lift_px = np.maximum(0.0, y_rest - glass_y)
-            apex_idx = int(np.argmax(lift_px[t_grasp:])) + t_grasp if t_grasp < T else T - 1
+
+            # Find the highest point of the lift
+            # this search for the frame with the largest lift after grasping
+            apex_idx = int(np.argmax(lift_px[t_grasp:])) + t_grasp if t_grasp < T else T - 1 
+            # store max lift
             max_lift_px = float(lift_px[apex_idx]) if apex_idx < T else 0.0
 
+            # Normalize the lift
             norm_lift = np.zeros(T, dtype=np.float32)
             if max_lift_px > 5.0:
                 for t in range(t_grasp, T):
                     norm_lift[t] = lift_px[t] / max_lift_px
+                # This converts pixel movement into approximately:
+                # 0.0 = glass on table, 1.0 = maximum observed lift
             else:
                 # Graceful bell-curve fallback if vertical motion variance is minimal
                 lift_len = min(25, max(10, (T - t_grasp) // 3))
@@ -158,20 +206,32 @@ class CoTrackerToPandaRetargeter:
 
             # Smooth norm_lift with moving average kernel
             kernel = np.ones(5, dtype=np.float32) / 5.0
+            """ It removes little CoTracker fluctuations.
+            5 frames / 30 FPS ≈ 0.167 seconds
+            So roughly 167 ms of the trajectory contributes to this smoothing. """
             norm_lift_smooth = np.convolve(norm_lift, kernel, mode="same")
             norm_lift_smooth = np.clip(norm_lift_smooth, 0.0, 1.0)
 
-            # Detect touchdown frame where glass returns to tabletop after apex
+            # Detect when the glass returns to the table
+            #Detect touchdown frame where glass returns to tabletop after apex
             after_apex = np.arange(T) > apex_idx
+            # now when to consider it is return to table < 3%
             table_returned = after_apex & (norm_lift_smooth < 0.03)
             t_returned = int(np.where(table_returned)[0][0]) if np.any(table_returned) else min(T - 10, apex_idx + 20)
+            
             # Velocity profile via gradient
-            d_norm = np.gradient(norm_lift_smooth)
+            d_norm = np.gradient(norm_lift_smooth) # change in normalized height per frame
 
+            """Ex: d_norm > 0 → glass moving upward
+                d_norm ≈ 0 → glass stationary
+                d_norm < 0 → glass moving downward
+            And later you map this to Panda Z motion.
+             """
         else:
             t_returned = min(T - 10, t_grasp + 40)
             d_norm = np.zeros(T, dtype=np.float32)
 
+        # Generate one Panda action per video frame
         for t in range(T):
             dx_hand, dy_hand, _ = wrist_deltas[t]
 
@@ -183,27 +243,46 @@ class CoTrackerToPandaRetargeter:
                     dx_robot = 0.0
                     dy_robot = 0.0
                     dz_robot = 0.0
-                else:
-                    # Direction towards glass in image
-                    v_reach = glass_c[t] - hand_c[t]
-                    dist_reach = float(np.linalg.norm(v_reach))
-                    u_reach = v_reach / (dist_reach + 1e-6)
 
-                    # Hand approach speed along reach vector
+                else:
+                    # After the hand enters
+                    # Direction towards glass in image
+                    v_reach = glass_c[t] - hand_c[t] # This calculates the image-space vector: hand → glass
+                    """ Ex:
+                    hand  = [0.25, 0.55]
+                    glass = [0.60, 0.50]
+                    ----------------------
+                    v_reach = [0.35, -0.05]
+                    """
+                    dist_reach = float(np.linalg.norm(v_reach)) # calculates the hand-glass distance.
+                    u_reach = v_reach / (dist_reach + 1e-6) # turns the vector into a unit direction.
+
+                    # Measure hand velocity towards the cup. This is the human wrist image motion.
                     v_hand = np.array([dx_hand, dy_hand], dtype=np.float32)
+
+                    # the dot product asks: How much of the human hand movement is actually directed toward the cup?
                     v_approach = float(np.dot(v_hand, u_reach))
 
+                    # Convert that into robot X motion
                     # Forward table reach un-projected by sin(theta)
-                    reach_rate = max(0.002, v_approach)
+                    reach_rate = max(0.002, v_approach) # the robot get always 0.002 reach
+                    
+                    # This converts "image motion" into table-plane "robot motion".
                     dx_robot = (reach_rate / max(0.1, self.sin_theta)) * 10.0
+                    # sin_theta compensate for camera viewing geometry. 10.0 is essentially a gain.
 
                     # Cylinder is aligned along center Y
+                    # This is an important limitation robot currently does not reproduce human side-to-side movement.
+                    # not yet general 3D human retargeting.
                     dy_robot = 0.0
 
                     # Calibrated descent to align gripper right at cylinder height
+                    # The purpose is to bring the gripper from its initial elevated pose down to the glass grasp height.
                     dz_robot = -0.24 if t > (t_entry + 4) else 0.0
                 grip = -1.0
 
+            # Phase 2: Close the gripper. stop moving → close gripper → wait
+            # immediately lifting on the exact grasp frame can produce unstable contacts.
             elif t < t_grasp + 14:
                 # =======================================================
                 # 2. GRASP SETTLE & CLAMP PHASE (stationary pinch)
@@ -239,7 +318,7 @@ class CoTrackerToPandaRetargeter:
                 dy_robot = 0.0
                 dz_robot = 0.15
                 grip = -1.0
-
+            # Convert into XYZ action, Cartesian translation:    
             raw_delta = np.array([dx_robot, dy_robot, dz_robot], dtype=np.float32)
 
             # EMA smoothing to eliminate jitter
@@ -259,6 +338,7 @@ class CoTrackerToPandaRetargeter:
             # ============================================================
             # ITERATION 1: RECORD THIS RETARGETING STEP
             # ============================================================
+
 
             if has_tracks:
                 current_hand_centroid = hand_c[t]
@@ -348,8 +428,14 @@ class CoTrackerToPandaRetargeter:
             }
 
         if output_file is None:
-            output_file = path.parent / f"{path.stem.replace('_trajectory', '')}_actions.npz"
+            output_file = (
+                path.parent
+                / f"{path.stem.replace('_trajectory', '')}_actions.npz")
 
+        output_file = Path(output_file)
+        # Make sure output directory exists
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        # Save NPZ
         np.savez_compressed(output_file, **retargeted_dict)
        
         # ============================================================
@@ -357,7 +443,6 @@ class CoTrackerToPandaRetargeter:
         # ============================================================
 
         output_file = Path(output_file)
-
         retarget_log_file = (output_file.parent
             / f"{output_file.stem}_log.txt")
 
@@ -405,8 +490,29 @@ def retarget_all_cotracker_trajectories(dir_path: str = "data/cotracker_trajecto
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) > 1:
-        retargeter = CoTrackerToPandaRetargeter()
-        retargeter.retarget_trajectory(sys.argv[1])
+
+    if len(sys.argv) < 2:
+        print("Usage: python3 cotracker_to_panda.py "
+            "<trajectory.npz> [output_folder]")
+        sys.exit(1)
+
+    input_file = sys.argv[1]
+    # Optional output folder
+    if len(sys.argv) >= 3:
+        output_dir = Path(sys.argv[2])
     else:
-        retarget_all_cotracker_trajectories()
+        output_dir = Path("datasets/cotracker_iterations/iteration_01_raw")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    input_path = Path(input_file)
+    output_file = (output_dir
+    / f"{input_path.stem.replace('_trajectory', '')}_actions.npz")
+
+    retargeter = CoTrackerToPandaRetargeter()
+    retargeter.retarget_trajectory(input_file,output_file=str(output_file))
+
+"""
+python3 src/retargeting/cotracker_to_panda.py \
+    datasets/cotracker_trajectories/cup_lifting_01_ct_trajectory.npz \
+    datasets/cotracker_iterations/iteration_02_camera_roi
+"""

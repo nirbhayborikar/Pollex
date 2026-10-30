@@ -2,6 +2,18 @@
 Simulation Environment Runner & Wrapper for RoboSuite / LIBERO
 Provides a unified interface for Franka Panda manipulation environments,
 supporting both headless offscreen rendering and interactive on-screen visualization.
+
+export PYTHONPATH="$HOME/Documents/vla/LIBERO:$PYTHONPATH"
+
+export DISPLAY=:10
+export XAUTHORITY="$HOME/.Xauthority"
+
+unset MUJOCO_GL
+unset QT_DEBUG_PLUGINS
+unset QT_PLUGIN_PATH
+unset QT_QPA_PLATFORM_PLUGIN_PATH
+
+python3 -m src.simulation.libero_runner
 """
 
 import os
@@ -53,12 +65,14 @@ class PandaSimEnvironment:
         # Attempt to import robosuite
         try:
             import robosuite as suite
-            from robosuite.controllers import load_composite_controller_config
+            from robosuite.controllers import load_controller_config
 
-            # Robosuite 1.5+ automatically loads the calibrated Panda OSC controller
+            controller_config = load_controller_config(default_controller="OSC_POSE")
+
             self.env = suite.make(
                 env_name=self.env_name,
                 robots="Panda",
+                controller_configs=controller_config,
                 has_renderer=has_renderer,
                 has_offscreen_renderer=has_offscreen_renderer,
                 render_camera=self.camera_name,
@@ -70,12 +84,53 @@ class PandaSimEnvironment:
                 use_camera_obs=has_offscreen_renderer,
                 initialization_noise=None,
             )
+
+            # ============================================================
+            # DEBUG / VERIFY ROBOSUITE ACTION SPACE
+            # ============================================================
+
+            action_low, action_high = self.env.action_spec
+
+            print(
+                f"[*] RoboSuite action dimension: "
+                f"{len(action_low)}"
+            )
+
+            print(
+                f"[*] Action low:  {action_low}"
+            )
+
+            print(
+                f"[*] Action high: {action_high}"
+            )
+
+            # RoboSuite composite controllers can expose the semantic
+            # structure of the action vector through the robot.
+            try:
+                print("\n[*] Panda action structure:")
+
+                for robot in self.env.robots:
+                    if hasattr(robot, "print_action_info"):
+                        robot.print_action_info()
+
+            except Exception as action_info_error:
+                print(
+                    "[!] Could not print action structure: "
+                    f"{action_info_error}"
+                )
+
+
+
             self.is_libero = False
-            print(f"[+] Loaded RoboSuite environment '{env_name}' with Franka Panda.")
+
+            print(
+                f"[+] Loaded RoboSuite environment "
+                f"'{env_name}' with Franka Panda."
+            )
 
         except ImportError as e:
             raise ImportError(
-                "Could not import robosuite. Install via: pip install mujoco robosuite\n"
+                "Could not import robosuite.\n"
                 f"Original error: {e}"
             )
 
@@ -108,34 +163,46 @@ class PandaSimEnvironment:
         img_key = f"{self.camera_name}_image"
         rgb = obs.get(img_key, None)
 
-        # RoboSuite camera images are rendered upside down due to OpenGL conventions
         if rgb is not None:
             rgb = np.flipud(rgb)
+
+        # Extract glass/object body XYZ from MuJoCo if GlassLiftEnv is active
+        object_pos = None
+        if hasattr(self.env, "cube") and hasattr(self.env, "sim"):
+            try:
+                body_id = self.env.sim.model.body_name2id(self.env.cube.root_body)
+                object_pos = self.env.sim.data.body_xpos[body_id].copy()
+            except Exception:
+                pass
 
         return {
             "rgb": rgb,
             "robot_eef_pos": obs.get("robot0_eef_pos", None),
             "robot_eef_quat": obs.get("robot0_eef_quat", None),
             "robot_gripper_qpos": obs.get("robot0_gripper_qpos", None),
+            "object_pos": object_pos,
             "raw_obs": obs,
         }
 
 
 if __name__ == "__main__":
-    print("[*] Running Panda simulation smoke test...")
+    import time
+
+    print("[*] Running Panda simulation with visible window...")
     try:
-        sim = PandaSimEnvironment(env_name="Lift", has_renderer=False, has_offscreen_renderer=True)
+        sim = PandaSimEnvironment(env_name="Lift", has_renderer=True, has_offscreen_renderer=False)
         obs = sim.reset()
         print("[+] Environment reset successful.")
         print(f"    Observation keys: {list(obs.keys())}")
-        if obs["rgb"] is not None:
-            print(f"    Rendered camera shape: {obs['rgb'].shape}")
+        print("[*] Running 200 steps — watch the simulation window...")
 
-        for i in range(10):
+        for i in range(200):
             action = np.array([0.0, 0.0, -0.05, 0.0, 0.0, 0.0, 1.0])
             obs, r, d, _ = sim.step(action)
+            sim.render()
+            time.sleep(1.0 / 20)
 
-        print("[+] 10 simulation steps completed successfully.")
+        print("[+] Simulation steps completed successfully.")
         sim.close()
     except Exception as err:
         print(f"[-] Sim test could not run: {err}")
