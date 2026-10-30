@@ -571,5 +571,29 @@ unset QT_DEBUG_PLUGINS && \
 unset QT_PLUGIN_PATH && \
 unset QT_QPA_PLATFORM_PLUGIN_PATH && \
 cd /home/nvidia/Documents/Pollex && \
-python3 -m src.simulation.replay_trajectory   --actions datasets/cotracker_iterations/iteration_09_x_bias/cup_lifting_01_ct_actions.npz   --out_video datasets/cotracker_iterations/iteration_19_blended_feedback/cup_lifting_01_iteration_19.mp4   --out_dataset datasets/cotracker_iterations/iteration_19_blended_feedback/cup_lifting_01_replay.npz   --human_video datasets/cotracker_trajectories/cup_lifting_01_ct_annotated.mp4   --task GlassLift   --closed_loop_pregrasp   --target_pad_x_offset -0.017   --pregrasp_kp_x 4.0   --pregrasp_max_correction 0.07   --pregrasp_deadband_m 0.002   --target_pad_z_offset 0.015   --pregrasp_kp_z 3.0   --pregrasp_max_z_correction 0.04   --pregrasp_z_deadband_m 0.002   --pregrasp_control_start_frac 0.45   --grasp_ready_x_tolerance_m 0.003   --grasp_ready_z_tolerance_m 0.002   --grasp_ready_consecutive_frames 3   --grasp_control_hold_frames 6   --gui
+
+python3 -m src.simulation.replay_trajectory_with_comotion \
+  --actions datasets/cotracker_iterations/iteration_8_comotion/cup_lifting_01_ct_actions.npz \
+  --out_video datasets/cotracker_iterations/iteration_8_comotion/cup_lifting_01_iteration_20.mp4 \
+  --out_dataset datasets/cotracker_iterations/iteration_8_comotion/cup_lifting_01_replay.npz \
+  --human_video datasets/cotracker_trajectories/cup_lifting_01_ct_annotated.mp4 \
+  --task GlassLift \
+  --closed_loop_pregrasp \
+  --target_pad_x_offset -0.017 \
+  --pregrasp_kp_x 4.0 \
+  --pregrasp_max_correction 0.07 \
+  --pregrasp_deadband_m 0.002 \
+  --target_pad_z_offset 0.015 \
+  --pregrasp_kp_z 3.0 \
+  --pregrasp_max_z_correction 0.04 \
+  --pregrasp_z_deadband_m 0.002 \
+  --pregrasp_control_start_frac 0.45 \
+  --grasp_ready_x_tolerance_m 0.003 \
+  --grasp_ready_z_tolerance_m 0.002 \
+  --grasp_ready_consecutive_frames 3 \
+  --grasp_control_hold_frames 6 \
+  --gui
+
+
+
 """
