@@ -469,8 +469,8 @@ Pollex/
 ## 8. Part VII: Quick-Start & Reproduction Guide
 
 ### Prerequisites
-- **Python**: 3.12 (tested on NVIDIA Jetson Orin with CUDA)
-- **GPU**: NVIDIA GPU with CUDA support (tested on Jetson AGX Orin 64GB)
+- **Python**: 3.12 (tested on NVIDIA Jetson THOR with CUDA)
+- **GPU**: NVIDIA GPU with CUDA support (tested on Jetson AGX THOR 128GB)
 - **OS**: Ubuntu 22.04+ (tested on JetPack 6.x / L4T)
 - **Display**: X11 display server for MuJoCo GUI rendering (`DISPLAY=:10`)
 
