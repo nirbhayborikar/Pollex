@@ -13,7 +13,7 @@
   <em><b>End-to-End Pipeline</b>: (1) iPhone video with CoTracker3 point tracking → (2) Expert retargeted trajectory in MuJoCo → (3) SmolVLA policy closed-loop rollout — <b>FULL-TASK SUCCESS (98.07/100)</b></em>
 </p>
 
-### What is this project in plain English?
+###  Short brief of Project:
 
 A person films themselves picking up a glass from a table using an iPhone. This project takes that 11-second video and, through a series of computer vision, physics simulation, and machine learning steps, teaches a simulated Franka Panda robot arm to perform the same pick-and-place task autonomously — seeing only through a camera, with no hardcoded trajectories at inference time.
 
