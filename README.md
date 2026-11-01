@@ -38,32 +38,40 @@ The final SmolVLA policy (450M parameters) scores **98.07/100** on an 8-criterio
 
 ```mermaid
 flowchart TD
-    A["📱 iPhone Video\n1080p · 30fps · 11s"] --> B["👁️ Computer Vision"]
+    A["iPhone video<br/>1080p · 30 fps · 11 s"]
 
-    subgraph CV ["Part I — Real-to-Sim Perception"]
-        B --> B1["MediaPipe Hands\n21 landmarks · occlusion fallback"]
-        B --> B2["CoTracker3\n37 dense points · co-motion ρ > 0.55"]
+    subgraph P1 ["Part I · Real-to-sim perception"]
+        direction LR
+        B1["MediaPipe Hands<br/>21 landmarks"]
+        B2["CoTracker3<br/>37 dense points"]
     end
 
-    B1 & B2 --> C["🔄 Motion Retargeting\n60° tilt correction · EEF-to-pad offset\ngoal-directed reach · distance deceleration"]
+    C["Motion retargeting<br/>60° tilt fix · EEF offset · deceleration"]
 
-    subgraph SIM ["Part II — Digital Twin  (7 iterations)"]
-        C --> D["🤖 RoboSuite / MuJoCo\nFranka Panda · GlassLift env\nOSC_POSE 7D · hollow glass 450 kg/m³"]
-        D --> E["📦 LeRobot Dataset\n340 transitions · 256×256 RGB\n8D state + 7D action per frame"]
+    subgraph P2 ["Part II · Digital twin (7 iterations)"]
+        direction LR
+        D["RoboSuite / MuJoCo<br/>Franka Panda · GlassLift"]
+        E["LeRobot dataset<br/>340 transitions · 256×256"]
+        D --> E
     end
 
-    subgraph VLA ["Part III — SmolVLA Policy"]
-        E --> F["🧠 SmolVLA  (450M params)\nFrozen SigLIP-400M encoder\n99.88M Flow-Matching Action Head\nPhase-balanced training · H=50 chunks"]
-        F --> G["⚡ Inference-Time Gain Calibration\nγ_z = 1.25 · γ_lift = 2.0\nRelease Guard state machine"]
+    subgraph P3 ["Part III · SmolVLA policy"]
+        direction LR
+        F["SmolVLA 450M<br/>Frozen SigLIP · flow head"]
+        G["Gain calibration<br/>γz 1.25 · γlift 2.0"]
+        F --> G
     end
 
-    G --> H["✅ FULL-TASK SUCCESS\n98.07 / 100"]
+    H["Full-task success<br/>98.07 / 100"]
 
-    style A fill:#1a1a2e,stroke:#e94560,color:#fff
-    style H fill:#0f3460,stroke:#00ff88,color:#00ff88,stroke-width:3px
-    style CV fill:#16213e,stroke:#0f3460,color:#e2e2e2
-    style SIM fill:#1a1a2e,stroke:#e94560,color:#e2e2e2
-    style VLA fill:#0f3460,stroke:#00d2ff,color:#e2e2e2
+    A --> P1 --> C --> P2 --> P3 --> H
+
+    classDef stage fill:#EEEDFE,stroke:#534AB7,color:#3C3489
+    classDef input fill:#F1EFE8,stroke:#5F5E5A,color:#444441
+    classDef result fill:#E1F5EE,stroke:#0F6E56,color:#085041,stroke-width:2px
+    class B1,B2,C,D,E,F,G stage
+    class A input
+    class H result
 ```
 
 ---
