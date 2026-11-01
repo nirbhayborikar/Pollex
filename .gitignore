@@ -1,5 +1,24 @@
+# Virtual environment
 .venv/
-models/
+
+# Python
 __pycache__/
 *.pyc
 *.egg-info/
+
+# Pretrained model weights
+models/
+
+# Training outputs (checkpoints, sweep results — 8GB+)
+outputs/
+
+# Large binary datasets (regenerate with pipeline commands)
+datasets/
+
+# Keep media GIFs (used by README) but skip large MP4s
+media/*.mp4
+
+# Misc
+eval_results/
+r2.md
+*.DS_Store

@@ -15,3 +15,8 @@ imageio>=2.30.0
 imageio-ffmpeg>=0.4.0
 robosuite>=1.4.0
 mujoco>=3.2.0
+transformers>=4.40.0
+
+# --- Editable installs (clone these repos first, see setup_env.sh) ---
+# lerobot          →  pip install -e /path/to/lerobot
+# libero           →  pip install -e /path/to/LIBERO
