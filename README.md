@@ -36,44 +36,34 @@ The final SmolVLA policy (450M parameters) scores **98.07/100** on an 8-criterio
 
 ## 1. Executive Summary & System Architecture
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                    POLLEX: Video → Robot Policy Pipeline                 │
-├──────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  📱 iPhone Video (1080p, 30fps, 11s)                                    │
-│       │                                                                  │
-│       ├──► MediaPipe Hands (21 landmarks, occlusion fallback)           │
-│       └──► CoTracker3 (37 dense points, co-motion ρ > 0.55)            │
-│                 │                                                        │
-│                 ▼                                                        │
-│  🔄 Motion Retargeting                                                  │
-│       60° camera tilt correction, EEF-to-pad offset,                    │
-│       goal-directed reach with distance deceleration                    │
-│                 │                                                        │
-│                 ▼                                                        │
-│  🤖 RoboSuite / MuJoCo Simulation                                      │
-│       Franka Panda, GlassLift env, OSC_POSE 7D controller              │
-│       Hollow glass (450 kg/m³), μ=2.0, q7=0 squared wrist              │
-│                 │                                                        │
-│                 ▼                                                        │
-│  📦 LeRobot Dataset (340 transitions)                                   │
-│       256×256 RGB + 8D state + 7D action per frame                      │
-│                 │                                                        │
-│                 ▼                                                        │
-│  🧠 SmolVLA (450M params)                                               │
-│       Frozen SigLIP-400M encoder + 99.88M Flow-Matching head           │
-│       Phase-balanced training, H=50 action chunks                       │
-│                 │                                                        │
-│                 ▼                                                        │
-│  ⚡ Inference-Time Gain Calibration                                     │
-│       γ_z=1.25 (descent), γ_lift=2.0 (lift amplification)              │
-│       Release Guard (lift→lower cycle detection)                        │
-│                 │                                                        │
-│                 ▼                                                        │
-│  ✅ FULL-TASK SUCCESS: 98.07/100                                        │
-│       approach → grasp → lift +4.31cm → lower → release                │
-└──────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    A["📱 iPhone Video\n1080p · 30fps · 11s"] --> B["👁️ Computer Vision"]
+
+    subgraph CV ["Part I — Real-to-Sim Perception"]
+        B --> B1["MediaPipe Hands\n21 landmarks · occlusion fallback"]
+        B --> B2["CoTracker3\n37 dense points · co-motion ρ > 0.55"]
+    end
+
+    B1 & B2 --> C["🔄 Motion Retargeting\n60° tilt correction · EEF-to-pad offset\ngoal-directed reach · distance deceleration"]
+
+    subgraph SIM ["Part II — Digital Twin  (7 iterations)"]
+        C --> D["🤖 RoboSuite / MuJoCo\nFranka Panda · GlassLift env\nOSC_POSE 7D · hollow glass 450 kg/m³"]
+        D --> E["📦 LeRobot Dataset\n340 transitions · 256×256 RGB\n8D state + 7D action per frame"]
+    end
+
+    subgraph VLA ["Part III — SmolVLA Policy"]
+        E --> F["🧠 SmolVLA  (450M params)\nFrozen SigLIP-400M encoder\n99.88M Flow-Matching Action Head\nPhase-balanced training · H=50 chunks"]
+        F --> G["⚡ Inference-Time Gain Calibration\nγ_z = 1.25 · γ_lift = 2.0\nRelease Guard state machine"]
+    end
+
+    G --> H["✅ FULL-TASK SUCCESS\n98.07 / 100"]
+
+    style A fill:#1a1a2e,stroke:#e94560,color:#fff
+    style H fill:#0f3460,stroke:#00ff88,color:#00ff88,stroke-width:3px
+    style CV fill:#16213e,stroke:#0f3460,color:#e2e2e2
+    style SIM fill:#1a1a2e,stroke:#e94560,color:#e2e2e2
+    style VLA fill:#0f3460,stroke:#00d2ff,color:#e2e2e2
 ```
 
 ---
