@@ -248,7 +248,8 @@ def replay_actions_and_record(
     glass_radius = float(obs.get("glass_radius", 0.030))
 
     logs = {key: [] for key in [
-        "sim_frames", "eef_positions", "eef_frames", "tumbler_positions", "tumbler_frames",
+        "sim_frames", "eef_positions", "eef_quats", "gripper_qpos", "eef_frames",
+        "tumbler_positions", "tumbler_frames",
         "left_pads", "right_pads", "contacts", "grasps", "rewards", "executed_actions",
         "x_errors", "x_corrections", "z_errors", "z_corrections", "pad_x_offsets",
         "pad_z_offsets", "control_active", "ready_counts",
@@ -339,10 +340,18 @@ def replay_actions_and_record(
             left_pad_pos = valid_xyz(obs.get("left_finger_pad_pos"))
             right_pad_pos = valid_xyz(obs.get("right_finger_pad_pos"))
 
+            eef_quat = obs.get("robot_eef_quat")
+            gripper_qpos = obs.get("robot_gripper_qpos")
+
+            eef_quat = np.asarray(eef_quat, dtype=np.float32).reshape(-1) if eef_quat is not None else np.full(4, np.nan, dtype=np.float32)
+            gripper_qpos = np.asarray(gripper_qpos, dtype=np.float32).reshape(-1) if gripper_qpos is not None else np.full(2, np.nan, dtype=np.float32)
+
             if eef_pos is not None:
                 current_eef_pos = eef_pos.copy()
                 logs["eef_positions"].append(eef_pos.copy())
                 logs["eef_frames"].append(frame_index)
+            logs["eef_quats"].append(eef_quat[:4].copy())
+            logs["gripper_qpos"].append(gripper_qpos.copy())
 
             if tumbler_pos is not None:
                 current_tumbler_pos = tumbler_pos.copy()
@@ -408,6 +417,10 @@ def replay_actions_and_record(
     executed_actions = np.asarray(logs["executed_actions"], dtype=np.float32)
     rewards = np.asarray(logs["rewards"], dtype=np.float32)
     eef_positions = np.asarray(logs["eef_positions"], dtype=np.float32)
+
+    eef_quats = np.asarray(logs["eef_quats"], dtype=np.float32)
+    gripper_qpos = np.asarray(logs["gripper_qpos"], dtype=np.float32)
+
     eef_frames = np.asarray(logs["eef_frames"], dtype=np.int32)
     tumbler_positions = np.asarray(logs["tumbler_positions"], dtype=np.float32)
     tumbler_frames = np.asarray(logs["tumbler_frames"], dtype=np.int32)
@@ -478,6 +491,8 @@ def replay_actions_and_record(
             executed_actions=executed_actions,
             rewards=rewards,
             robot_eef_pos=eef_positions,
+            robot_eef_quat=eef_quats,
+            robot_gripper_qpos=gripper_qpos,
             robot_eef_frames=eef_frames,
             tumbler_positions=tumbler_positions,
             tumbler_position_frames=tumbler_frames,
@@ -571,11 +586,10 @@ unset QT_DEBUG_PLUGINS && \
 unset QT_PLUGIN_PATH && \
 unset QT_QPA_PLATFORM_PLUGIN_PATH && \
 cd /home/nvidia/Documents/Pollex && \
-
-python3 -m src.simulation.replay_trajectory_with_comotion \
+python3 -m src.simulation.replay_trajectory \
   --actions datasets/cotracker_iterations/iteration_8_comotion/cup_lifting_01_ct_actions.npz \
-  --out_video datasets/cotracker_iterations/iteration_8_comotion/cup_lifting_01_iteration_20.mp4 \
-  --out_dataset datasets/cotracker_iterations/iteration_8_comotion/cup_lifting_01_replay.npz \
+  --out_video datasets/cotracker_iterations/iteration_10_smolvla_expert/cup_lifting_01_iteration_10.mp4 \
+  --out_dataset datasets/cotracker_iterations/iteration_10_smolvla_expert/cup_lifting_01_replay.npz \
   --human_video datasets/cotracker_trajectories/cup_lifting_01_ct_annotated.mp4 \
   --task GlassLift \
   --closed_loop_pregrasp \
@@ -593,7 +607,5 @@ python3 -m src.simulation.replay_trajectory_with_comotion \
   --grasp_ready_consecutive_frames 3 \
   --grasp_control_hold_frames 6 \
   --gui
-
-
 
 """
