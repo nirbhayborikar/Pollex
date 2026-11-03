@@ -36,6 +36,8 @@ The final SmolVLA policy (450M parameters) scores **98.07/100** on an 8-criterio
 
 ## 1. Executive Summary & System Architecture
 
+
+
 ```mermaid
 flowchart TD
     A["📱 iPhone Video\n1080p · 30fps · 11s"] --> B["👁️ Computer Vision"]
@@ -66,6 +68,28 @@ flowchart TD
     style VLA fill:#0f3460,stroke:#00d2ff,color:#e2e2e2
 ```
 
+```mermaid
+flowchart TD
+    A["iPhone Video<br/>1080p · 30fps · 11s"] --> B["Computer Vision"]
+
+    B --> C["MediaPipe Hands<br/>21 Landmarks · Occlusion Fallback"]
+    B --> D["CoTracker3<br/>37 Dense Points · Co-motion ρ > 0.55"]
+
+    C --> E["Motion Retargeting"]
+    D --> E
+
+    E --> F["60° Tilt Correction<br/>EEF-to-Pad Offset<br/>Goal-Directed Reach<br/>Distance Deceleration"]
+
+    F --> G["RoboSuite / MuJoCo<br/>Franka Panda · GlassLift Environment<br/>OSC_POSE 7D · Hollow Glass 450 kg/m³"]
+
+    G --> H["LeRobot Dataset<br/>340 Transitions · 256×256 RGB<br/>8D State + 7D Action"]
+
+    H --> I["SmolVLA · 450M Parameters<br/>Frozen SigLIP-400M Encoder<br/>99.88M Flow-Matching Action Head<br/>Phase-Balanced Training · H=50"]
+
+    I --> J["Inference-Time Gain Calibration<br/>γ_z = 1.25 · γ_lift = 2.0<br/>Release Guard State Machine"]
+
+    J --> K["Full-Task Success<br/>98.07 / 100"]
+```
 ---
 
 ## 2. Part I: Real-to-Sim Computer Vision
