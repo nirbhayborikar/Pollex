@@ -37,27 +37,28 @@ The final SmolVLA policy (450M parameters) scores **98.07/100** on an 8-criterio
 ## 1. Executive Summary & System Architecture
 
 ```mermaid
-
 flowchart TD
-    A["iPhone Video<br/>1080p · 30fps · 11s"] --> B["Computer Vision"]
+    A["iPhone Video<br/>1080p · 30 FPS · 11 s"]
 
-    B --> C["MediaPipe Hands<br/>21 Landmarks · Occlusion Fallback"]
-    B --> D["CoTracker3<br/>37 Dense Points · Co-motion ρ > 0.55"]
+    A --> B["Computer Vision Pipeline"]
+
+    B --> C["MediaPipe Hands<br/>21 Hand Landmarks<br/>Occlusion-Aware Fallback"]
+    B --> D["CoTracker3<br/>37 Dense Tracking Points<br/>Co-motion ρ > 0.55"]
 
     C --> E["Motion Retargeting"]
     D --> E
 
-    E --> F["60° Tilt Correction<br/>EEF-to-Pad Offset<br/>Goal-Directed Reach<br/>Distance Deceleration"]
+    E --> F["Robot Motion Mapping<br/>60° Tilt Correction<br/>EEF-to-Pad Offset<br/>Goal-Directed Reach<br/>Distance-Based Deceleration"]
 
-    F --> G["RoboSuite / MuJoCo<br/>Franka Panda · GlassLift Environment<br/>OSC_POSE 7D · Hollow Glass 450 kg/m³"]
+    F --> G["RoboSuite / MuJoCo<br/>Franka Panda<br/>Glass-Lifting Environment<br/>OSC_POSE · 7D Control"]
 
-    G --> H["LeRobot Dataset<br/>340 Transitions · 256×256 RGB<br/>8D State + 7D Action"]
+    G --> H["LeRobot Dataset<br/>340 Transitions<br/>256 × 256 RGB<br/>8D State · 7D Action"]
 
-    H --> I["SmolVLA · 450M Parameters<br/>Frozen SigLIP-400M Encoder<br/>99.88M Flow-Matching Action Head<br/>Phase-Balanced Training · H=50"]
+    H --> I["SmolVLA · 450M Parameters<br/>Frozen SigLIP-400M Encoder<br/>99.88M Action Head<br/>Phase-Balanced Training · H=50"]
 
-    I --> J["Inference-Time Gain Calibration<br/>γ_z = 1.25 · γ_lift = 2.0<br/>Release Guard State Machine"]
+    I --> J["Inference-Time Calibration<br/>γz = 1.25 · γlift = 2.0<br/>Release Guard State Machine"]
 
-    J --> K["Full-Task Success<br/>98.07 / 100"]
+    J --> K["Task Evaluation<br/>98.07 / 100"]
 ```
 ---
 
