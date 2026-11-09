@@ -35,7 +35,9 @@ The final SmolVLA policy (450M parameters) scores **98.07/100** on an 8-criterio
 ---
 
 ## 1. Executive Summary & System Architecture
+
 ```mermaid
+
 flowchart TD
     A["iPhone Video<br/>1080p · 30fps · 11s"] --> B["Computer Vision"]
 
